@@ -62,9 +62,16 @@ is never populated and `docker create` fails.
 
 ## Rebuilds
 
-Weekly (Monday 04:00 UTC) plus on change and on demand. The schedule is the
-point: built only on change, a base image rots quietly while the OS it carries
-ships security fixes nobody picks up.
+**Daily** (04:00 UTC) plus on change and on demand. The schedule is the point:
+built only on change, a base image rots quietly while the OS it carries ships
+security fixes nobody picks up.
+
+Daily rather than weekly because it costs nothing (public repo, free unlimited
+hosted minutes, ~60s per build) and Debian ships security updates continuously.
+It does **not** churn consumers daily: layers are content-addressed and cached,
+so a day where nothing moved upstream reproduces the same digest and nobody
+re-pulls. A new image reaches consumers exactly when a package actually
+changed.
 
 Each build publishes `:latest` and a `:YYYYMMDD` tag, so a consumer that needs
 to escape a bad rebuild has something to pin to. Pinning to a digest is

@@ -14,8 +14,20 @@ on:
       - '**.md'
       - 'LICENSE'
   schedule:
-    # Weekly, Monday 04:00 UTC — picks up the base OS's security updates.
-    - cron: '0 4 * * 1'
+    # DAILY, 04:00 UTC. Weekly was the first instinct and daily is better, for
+    # a reason that is not "more is better":
+    #
+    #   - it costs nothing. This repo is public, so hosted minutes are free and
+    #     unlimited, and a build takes about 60 seconds.
+    #   - Debian ships security updates continuously, not weekly. A weekly
+    #     rebuild means carrying a known CVE for up to six days longer than
+    #     necessary, for no saving.
+    #   - it does NOT churn consumers daily. The layers are content-addressed
+    #     and the build is cached, so a day where nothing changed upstream
+    #     reproduces the same digest and nobody re-pulls. A consumer only sees
+    #     a new image when an installed package actually moved, which is
+    #     exactly when it should.
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 permissions:
