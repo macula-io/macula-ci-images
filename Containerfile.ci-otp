@@ -1,0 +1,57 @@
+# macula-ci-otp — the BUILD image for the ERLANG services (rebar3), as
+# distinct from macula-ci-pq which carries Elixir for the mix ones.
+#
+# > This exists so no pipeline builds OpenSSL or OTP from source, and so the
+# > Erlang services build on the OTP version the team actually standardised on.
+#
+# ⚠ OTP 28.4.2, NOT 28.1. The team standard is 28.4.2 and another major or minor
+# is drift. macula-station's CI was pinned to 28.1 and built it from source,
+# which is how the gap survived: a version nobody chose, rebuilt every run.
+# Neptunus declined to call a commit CI-verified partly for that reason.
+#
+# ⚠ TRIXIE IS LOAD-BEARING. The 11.x wire signs with ML-DSA-87/ML-KEM, which
+# arrived in OpenSSL 3.5. Bookworm ships 3.0, where the crypto NIF dies with
+# evp.c "Bad key type" on the first PQ keygen. hexpm publishes the trixie
+# variant of this OTP; check the tag exists before bumping.
+ARG OTP_VERSION=28.4.2
+ARG DEBIAN_VERSION=trixie-20260610-slim
+
+FROM docker.io/hexpm/erlang:${OTP_VERSION}-debian-${DEBIAN_VERSION}
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      curl \
+      ca-certificates \
+      pkg-config \
+      libssl-dev \
+      openssl \
+      cmake \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Rust, because several macula deps are NIFs with no Erlang fallback:
+# macula_quic refuses to compile without a toolchain and says so.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version && cargo --version
+
+# rebar3 from the canonical S3 binary rather than a version lookup, because the
+# lookup trips on GitHub's pagination cap.
+RUN curl -fsSL -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 \
+    && chmod +x /usr/local/bin/rebar3 && rebar3 version
+
+# Refuse to ship an image that cannot do the one thing it exists for. An image
+# that silently lost ML-DSA would take every consumer's CI green while the wire
+# fails, which is this estate's signature failure.
+RUN openssl version \
+    && erl -noshell -eval 'io:format("OTP ~s~n",[erlang:system_info(otp_release)]),halt().' \
+    && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
+         true -> io:format("mldsa87 ok~n"), halt(0); \
+         false -> io:format("mldsa87 MISSING~n"), halt(1) end.'
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula CI build image for Erlang/rebar3 services: OTP 28.4.2 on Debian trixie with OpenSSL 3.5+ (ML-DSA), rebar3 and a Rust toolchain"

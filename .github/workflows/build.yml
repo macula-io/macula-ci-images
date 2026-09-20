@@ -50,6 +50,8 @@ jobs:
         include:
           - image: macula-ci-pq
             file: Containerfile.ci-pq
+          - image: macula-ci-otp
+            file: Containerfile.ci-otp
           - image: macula-pq-runtime
             file: Containerfile.pq-runtime
 
