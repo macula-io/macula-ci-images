@@ -14,19 +14,18 @@ on:
       - '**.md'
       - 'LICENSE'
   schedule:
-    # HOURLY. It costs nothing (public repo, free unlimited hosted minutes,
-    # ~60s a build) and it does not churn consumers: layers are
-    # content-addressed and cached, so an hour where nothing moved upstream
-    # reproduces the same digest and nobody re-pulls. A new image reaches
-    # consumers exactly when an installed package actually changed.
+    # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
+    # rather than on cost: the build is free and takes ~60s, so cost is not the
+    # constraint. The constraints are upstream and GitHub.
     #
-    # ⚠ Do not expect it to actually run hourly, and do not treat a gap as a
-    # fault. GitHub delays or DROPS scheduled runs under load, and hourly is
-    # the least reliable tier. The real ceiling on freshness is upstream
-    # anyway: Debian's archive does not move hourly, so this buys much less
-    # than 24x over daily. It is set here because it is free, not because the
-    # benefit scales with the frequency.
-    - cron: '0 * * * *'
+    #   - Debian's archive does not move hourly, so 24x the builds chase a
+    #     source that changes a few times a week.
+    #   - GitHub delays or DROPS scheduled runs under load and hourly is its
+    #     least reliable tier, so an hourly cron does not deliver hourly.
+    #
+    # Daily is where the cadence stops buying anything. If a specific CVE ever
+    # needs picking up sooner, workflow_dispatch is immediate and exact.
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -74,11 +73,13 @@ jobs:
           # escape a bad rebuild has something to pin TO. Pinning to a digest
           # is stricter and also works.
           #
-          # ⚠ YYYYMMDD-HHmm, not YYYYMMDD. With a sub-daily schedule a
-          # date-only tag is claimed by every build that day, each silently
-          # overwriting the last, so "pin to yesterday's tag" would resolve to
-          # whichever build happened to run last rather than to a known image.
-          # A moving tag that LOOKS immutable is worse than no tag.
+          # ⚠ YYYYMMDD-HHmm, not YYYYMMDD, and this is NOT about the schedule.
+          # The scheduled build is daily, but push and workflow_dispatch builds
+          # land on the same day too, so a date-only tag is claimed by more
+          # than one build and each silently overwrites the last. "Pin to
+          # yesterday's tag" would then resolve to whichever build ran last
+          # rather than to a known image. A moving tag that LOOKS immutable is
+          # worse than no tag, so the time stays in it at any cadence.
           tags: |
             type=raw,value=latest
             type=raw,value={{date 'YYYYMMDD-HHmm'}}

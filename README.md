@@ -62,26 +62,28 @@ is never populated and `docker create` fails.
 
 ## Rebuilds
 
-**Hourly**, plus on change and on demand. The schedule is the point: built only
-on change, a base image rots quietly while the OS it carries ships security
-fixes nobody picks up.
+**Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:
+built only on change, a base image rots quietly while the OS it carries ships
+security fixes nobody picks up.
 
-It costs nothing (public repo, free unlimited hosted minutes, ~60s per build)
-and it does **not** churn consumers hourly: layers are content-addressed and
-cached, so an hour where nothing moved upstream reproduces the same digest and
-nobody re-pulls. A new image reaches consumers exactly when a package actually
-changed.
+Hourly was considered and rejected on evidence rather than cost. The build is
+free and takes ~60s, so cost is not the constraint; upstream and GitHub are.
+Debian's archive does not move hourly, and GitHub delays or drops scheduled runs
+under load with hourly its least reliable tier — so an hourly cron neither runs
+hourly nor finds anything new most of the time. Daily is where the cadence stops
+buying anything. To pick up a specific CVE sooner, `workflow_dispatch` is
+immediate and exact.
 
-⚠ **Do not expect it to run hourly on the dot, and do not read a gap as a
-fault.** GitHub delays or drops scheduled runs under load, and hourly is the
-least reliable tier. The real ceiling on freshness is upstream: Debian's archive
-does not move hourly either. The cadence is set because it is free, not because
-the benefit scales with the frequency.
+It does **not** churn consumers: layers are content-addressed and cached, so a
+day where nothing moved upstream reproduces the same digest and nobody re-pulls.
+A new image reaches consumers exactly when a package actually changed.
 
 Each build publishes `:latest` and a `:YYYYMMDD-HHmm` tag, so a consumer that
 needs to escape a bad rebuild has something to pin to. Pinning to a digest is
 stricter and also works.
 
-The tag carries the time, not just the date, because with a sub-daily schedule a
-date-only tag is claimed by every build that day and silently overwritten — a
-moving tag that looks immutable is worse than no tag at all.
+The tag carries the time, not just the date, and that is **not** about the
+schedule: push and `workflow_dispatch` builds land on the same day as the
+scheduled one, so a date-only tag would be claimed by several builds and
+silently overwritten. A moving tag that looks immutable is worse than no tag at
+all, at any cadence.
