@@ -1,0 +1,80 @@
+# Build and publish the Macula base images.
+#
+# ⚠ THE SCHEDULE IS THE POINT, not the push trigger. A base image's job is to
+# carry current OS security updates. Built only on change, it rots quietly:
+# nobody edits a Containerfile for months while Debian ships CVE fixes nobody
+# picks up. The weekly rebuild is what stops that, and it is the reason this
+# repo is worth having at all rather than a Containerfile in a service repo.
+name: build base images
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  schedule:
+    # Weekly, Monday 04:00 UTC — picks up the base OS's security updates.
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # GitHub-hosted on purpose. This repo is public, so hosted minutes are free
+    # and unlimited, and the org's self-hosted runners are (correctly) not
+    # offered to public repos. Building base images must not depend on the same
+    # machines whose pipelines consume them.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: macula-ci-pq
+            file: Containerfile.ci-pq
+          - image: macula-pq-runtime
+            file: Containerfile.pq-runtime
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/macula-io/${{ matrix.image }}
+          # A date tag as well as :latest, so a consumer that needs to pin
+          # against a bad rebuild has something to pin TO. Pinning to a digest
+          # works too and is stricter.
+          tags: |
+            type=raw,value=latest
+            type=raw,value={{date 'YYYYMMDD'}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          provenance: false

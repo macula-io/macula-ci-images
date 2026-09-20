@@ -1,0 +1,32 @@
+# macula-pq-runtime — the RUNTIME image. The smallest base that can actually
+# run a post-quantum Macula release.
+#
+# > This exists so every service's runtime stage is the same known-good base,
+# > rather than each Dockerfile re-deciding which Debian and which OpenSSL.
+#
+# ⚠ Same trixie constraint as the build image, for the same reason: a release
+# built against OpenSSL 3.5+ links libcrypto.so.3 dynamically, so the RUNTIME
+# stage's OpenSSL is what serves ML-DSA at run time. Put this on bookworm and
+# the service starts, connects, and fails every PQ handshake.
+ARG DEBIAN_VERSION=trixie-20260610-slim
+
+FROM docker.io/library/debian:${DEBIAN_VERSION}
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      openssl \
+      ca-certificates \
+      libstdc++6 \
+      libncurses6 \
+      curl \
+      locales \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# A runtime that cannot do ML-DSA is not this image. Caught here rather than in
+# a service's first handshake.
+RUN openssl version && openssl list -signature-algorithms | grep -qi "ml-dsa" \
+    || { echo "ML-DSA missing from this OpenSSL"; exit 1; }
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula runtime base: Debian trixie with OpenSSL 3.5+ (ML-DSA)"
