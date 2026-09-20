@@ -36,6 +36,19 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       cmake \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# RUST, because several Macula deps are NIFs with no Erlang fallback: macula's
+# own macula_quic refuses to compile without a toolchain and says so. The
+# workflows this image replaces each installed Rust as a separate step; doing it
+# here means no consumer has to remember, and no consumer discovers it the way
+# macula-realm did, at `mix compile' after everything else had passed.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version && cargo --version
+
 # hex and rebar3, so no pipeline spends a step installing them. rebar3 comes
 # from the canonical S3 binary rather than a version lookup, because the lookup
 # trips on GitHub's pagination cap.
@@ -47,9 +60,11 @@ RUN mix local.hex --force && mix local.rebar --force \
 # image that silently lost ML-DSA would take every consumer's CI green while
 # the wire fails, which is this estate's signature failure.
 RUN openssl version \
+    && rustc --version \
+    && cargo --version \
     && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
          true -> io:format("mldsa87 ok~n"), halt(0); \
          false -> io:format("mldsa87 MISSING~n"), halt(1) end.'
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
-LABEL org.opencontainers.image.description="Macula CI build image: Elixir/OTP on Debian trixie with OpenSSL 3.5+ (ML-DSA), hex and rebar3"
+LABEL org.opencontainers.image.description="Macula CI build image: Elixir/OTP on Debian trixie with OpenSSL 3.5+ (ML-DSA), hex, rebar3 and a Rust toolchain for NIF deps"
