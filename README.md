@@ -11,6 +11,8 @@ Two images, published to `ghcr.io/macula-io`:
 | `macula-ci-pq:ex118-*` | CI build, test and **release** for mix services that cannot release on Elixir 1.19 yet (macula-realm, macula-portal) | Elixir **1.18.4 compiled on OTP 28.4.3** (hexpm publishes no such pair), Debian trixie, OpenSSL 3.5+, hex **2.5.1**, rebar3 **3.27.0**, Rust **1.98.1**, all pinned. Temporary: Elixir 1.19's `mix release` fails "Unknown application :erts" when a dep lists erts (horus). Goes away when that is fixed upstream |
 | `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.3** (the team standard) on Debian trixie-20260918, OpenSSL 3.5+, rebar3 **3.27.0** (sha256-checked), Rust **1.98.1**, all pinned exactly |
 | `macula-pq-runtime` | release runtime stage | Debian trixie, OpenSSL 3.5+, the runtime libraries a release links |
+| `macula-ci-otp-rocksdb` | CI build, rebar3 services that link erlang **rocksdb** (barrel_docdb via mcl-om) | `macula-ci-otp` plus a prebuilt shared **librocksdb 11.1.2** (the tree erlang rocksdb 3.1.2 bundles) in `/usr/local`, and `ERLANG_ROCKSDB_OPTS=-DWITH_SYSTEM_ROCKSDB=ON`: a build compiles only the NIF |
+| `macula-pq-runtime-rocksdb` | release runtime stage for those services | `macula-pq-runtime` plus `librocksdb.so.11` and its compression libraries |
 
 ## Why this repo exists
 
@@ -61,6 +63,29 @@ runner bind-mounts `_work/_actions` into the container; Docker silently creates
 a missing bind-mount source, podman refuses with
 `statfs ... no such file or directory`. With no action to download, `_actions`
 is never populated and `docker create` fails.
+
+## The rocksdb pair
+
+`Containerfile.rocksdb` builds RocksDB **once**, on a GitHub-hosted runner, so no
+service compiles it again (10-20 minutes of every core per build; four at once
+put host00 at load 93 on 2026-09-24). A service that links erlang `rocksdb`
+builds in `macula-ci-otp-rocksdb` and runs on `macula-pq-runtime-rocksdb`:
+
+```dockerfile
+FROM ghcr.io/macula-io/macula-ci-otp-rocksdb@sha256:<digest> AS builder
+# ... rebar3 as_prod release: the NIF links /usr/local/lib/librocksdb.so.11
+FROM ghcr.io/macula-io/macula-pq-runtime-rocksdb@sha256:<digest>
+```
+
+⛔ **The pair goes together.** A release built in the rocksdb CI image carries
+a NIF that needs `librocksdb.so.11` at run time; on plain `macula-pq-runtime`
+it fails at the first rocksdb call, not at boot.
+
+Both are derived from `macula-ci-otp` and `macula-pq-runtime` **by digest**, in
+a job that runs after those are rebuilt, so they follow every security rebuild.
+Each image refuses to publish unless its self-test passes: the CI image compiles
+the real binding against the library, checks the NIF links it, and writes and
+reads a database; the runtime checks the library resolves with nothing missing.
 
 ## Rebuilds
 

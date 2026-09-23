@@ -132,3 +132,78 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }}
           cache-to: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }},mode=max
           provenance: false
+
+  # The rocksdb images are DERIVED from two of the images above, by digest, so
+  # they run after them and follow every rebuild of their bases. They are
+  # separate from the matrix because they have no base of their own to
+  # resolve: newest_dated_base.py reads one FROM per file, and
+  # Containerfile.rocksdb has three stages, all FROM our own images.
+  rocksdb:
+    needs: build
+    runs-on: ubuntu-latest
+    # RocksDB itself compiles here, once per build, on a hosted runner: this
+    # repo is public, so hosted minutes are free, and never on our own boxes.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macula-ci-otp-rocksdb, macula-pq-runtime-rocksdb]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The bases the job above has just pushed, as exact digests. An
+      # unresolvable one stops the job: never build on a guessed base.
+      - name: Resolve the base digests
+        id: bases
+        run: |
+          set -euo pipefail
+          digest() {
+            d=$(docker buildx imagetools inspect "ghcr.io/macula-io/$1:latest" --format '{{json .Manifest}}' | jq -r .digest)
+            case "$d" in sha256:*) echo "ghcr.io/macula-io/$1@$d" ;; *) echo "REFUSED: no digest for $1:latest" >&2; exit 1 ;; esac
+          }
+          ci_otp=$(digest macula-ci-otp)
+          pq_runtime=$(digest macula-pq-runtime)
+          echo "ci_otp=$ci_otp" >> "$GITHUB_OUTPUT"
+          echo "pq_runtime=$pq_runtime" >> "$GITHUB_OUTPUT"
+          echo "Building ${{ matrix.target }} on CI_OTP=$ci_otp PQ_RUNTIME=$pq_runtime"
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/macula-io/${{ matrix.target }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value={{date 'YYYYMMDD-HHmm'}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile.rocksdb
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.macula.base.ci-otp=${{ steps.bases.outputs.ci_otp }}
+            io.macula.base.pq-runtime=${{ steps.bases.outputs.pq_runtime }}
+          build-args: |
+            CI_OTP=${{ steps.bases.outputs.ci_otp }}
+            PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
+          no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
+          # One scope for both targets: the librocksdb stage is identical in
+          # both, so whichever job builds it first serves it to later runs.
+          cache-from: type=gha,scope=rocksdb
+          cache-to: type=gha,scope=rocksdb,mode=max
+          provenance: false

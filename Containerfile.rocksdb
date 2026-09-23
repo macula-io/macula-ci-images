@@ -1,0 +1,170 @@
+# macula-ci-otp-rocksdb and macula-pq-runtime-rocksdb: the build and runtime
+# images for services that link the erlang `rocksdb' binding (mcl-om's
+# barrel_docdb, and through it every mcl-* service with a read model).
+#
+# > This exists so no pipeline compiles RocksDB again. The binding bundles
+# > RocksDB's C++ source and builds it inside every `rebar3 compile': 10-20
+# > minutes of every core, per service, per gate. On 2026-09-24 four of those
+# > at once put host00 at load 93. Here it is built ONCE, and a service
+# > compiles only the small NIF against it (ERLANG_ROCKSDB_OPTS below).
+#
+# Three stages; the workflow builds the two named targets:
+#   librocksdb              the build, shared by both targets
+#   macula-ci-otp-rocksdb   ci-otp + librocksdb + headers, for rebar3 builds
+#   macula-pq-runtime-rocksdb  pq-runtime + librocksdb.so.11, to run releases
+#
+# ⛔ A release built in macula-ci-otp-rocksdb RUNS ONLY on
+# macula-pq-runtime-rocksdb (or another base carrying the same librocksdb):
+# its NIF links librocksdb.so.11 dynamically. On plain pq-runtime it fails to
+# load the NIF at the first rocksdb call, not at boot.
+#
+# Both bases are pinned by DIGEST. The defaults below are for a local build;
+# the workflow passes the digests of the ci-otp and pq-runtime it has just
+# built, so these images follow the daily security rebuilds of their bases.
+ARG CI_OTP=ghcr.io/macula-io/macula-ci-otp@sha256:dd2ba6eb858a0eacedf0179300323fe5c6da46fb308d22da0ca8cfcd1f0718dc
+ARG PQ_RUNTIME=ghcr.io/macula-io/macula-pq-runtime@sha256:15a5501b7277804c5a62c93121d157773d1401d238a1bf630ef4b50fc2f1df09
+
+# ⚠ THE SOURCE IS THE BINDING'S OWN, not upstream RocksDB's tag and not
+# Debian's package (trixie ships 9.x). The NIF is written against exactly the
+# tree it bundles, so that is the tree built here: deps/rocksdb from the hex
+# tarball of the binding version, checked against its sha256. Bump the binding
+# and all three of these move together, in one commit.
+ARG ERLANG_ROCKSDB_VERSION=3.1.2
+ARG ERLANG_ROCKSDB_SHA256=3cebd7d503cfacd6556a9c1ffd1951ee089f232d6f374e584978b308af6101c0
+ARG ROCKSDB_VERSION=11.1.2
+
+# ---------------------------------------------------------------------------
+FROM ${CI_OTP} AS librocksdb
+
+# A failed first command in a pipe (curl, tar, ldd) must fail the step.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ERLANG_ROCKSDB_VERSION
+ARG ERLANG_ROCKSDB_SHA256
+ARG ROCKSDB_VERSION
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      libsnappy-dev \
+      liblz4-dev \
+      libzstd-dev \
+      zlib1g-dev \
+      libbz2-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN curl -fsSL -o rocksdb.tar \
+      "https://repo.hex.pm/tarballs/rocksdb-${ERLANG_ROCKSDB_VERSION}.tar" \
+    && echo "${ERLANG_ROCKSDB_SHA256}  rocksdb.tar" | sha256sum -c - \
+    && tar -xOf rocksdb.tar contents.tar.gz | tar -xzf - deps/rocksdb \
+    && grep -q "define ROCKSDB_MAJOR ${ROCKSDB_VERSION%%.*}$" deps/rocksdb/include/rocksdb/version.h \
+    && rm rocksdb.tar
+
+# The flags are the binding's own bundled build (c_src/CMake/build-rocksdb.cmake),
+# with two deliberate differences: SHARED instead of static, and every
+# compression library ON rather than whichever the build host happened to have.
+#   PORTABLE=ON   the beams are Celeron J4105s with no AVX; a native build
+#                 from a hosted runner would SIGILL there.
+#   USE_RTTI=1    with WITH_SYSTEM_ROCKSDB the binding compiles its NIF with
+#                 -fno-rtti, which links only against an RTTI build.
+RUN cmake -S deps/rocksdb -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr/local \
+      -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DROCKSDB_BUILD_SHARED=ON \
+      -DPORTABLE=ON \
+      -DUSE_RTTI=1 \
+      -DFAIL_ON_WARNINGS=OFF \
+      -DWITH_TOOLS=OFF \
+      -DWITH_CORE_TOOLS=OFF \
+      -DWITH_TESTS=OFF \
+      -DWITH_BENCHMARK_TOOLS=OFF \
+      -DWITH_TRACE_TOOLS=OFF \
+      -DWITH_GFLAGS=OFF \
+      -DWITH_JEMALLOC=OFF \
+      -DWITH_SNAPPY=ON \
+      -DWITH_LZ4=ON \
+      -DWITH_ZSTD=ON \
+      -DWITH_ZLIB=ON \
+      -DWITH_BZ2=ON \
+    && cmake --build build --target rocksdb-shared --parallel "$(nproc)" \
+    && mkdir -p /out/lib /out/include \
+    && cp -a build/librocksdb.so* /out/lib/ \
+    && cp -a deps/rocksdb/include/rocksdb /out/include/ \
+    && test -e "/out/lib/librocksdb.so.${ROCKSDB_VERSION}" \
+    && ls -la /out/lib
+
+# ---------------------------------------------------------------------------
+FROM ${CI_OTP} AS macula-ci-otp-rocksdb
+
+# A failed first command in a pipe (curl, tar, ldd) must fail the step.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ERLANG_ROCKSDB_VERSION
+ARG ROCKSDB_VERSION
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      libsnappy-dev \
+      liblz4-dev \
+      libzstd-dev \
+      zlib1g-dev \
+      libbz2-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=librocksdb /out/lib/ /usr/local/lib/
+COPY --from=librocksdb /out/include/ /usr/local/include/
+RUN ldconfig
+
+# Every `rebar3 compile' in this image links the NIF against the library
+# above instead of building RocksDB from the bundled source.
+ENV ERLANG_ROCKSDB_OPTS="-DWITH_SYSTEM_ROCKSDB=ON"
+# The NIF build runs `-j <every core>' unless this names a -j; MAKEFLAGS and a
+# container's --cpus do not cap it. Four is plenty for the NIF alone, and it
+# keeps a build on a shared host (host00) inside the house cap.
+ENV ERLANG_ROCKSDB_BUILDOPTS="-j4"
+
+# Refuse to publish an image that does not do the one thing it exists for:
+# compile the real binding against this library, check the NIF links THIS
+# librocksdb and no bundled copy, then open a database, write, read it back.
+WORKDIR /tmp/selftest
+RUN mkdir src \
+    && printf '{deps, [{rocksdb, "%s"}]}.\n' "${ERLANG_ROCKSDB_VERSION}" > rebar.config \
+    && printf '{application, selftest, [{vsn, "0"}, {applications, [kernel, stdlib]}]}.\n' > src/selftest.app.src \
+    && rebar3 compile \
+    && nif=_build/default/lib/rocksdb/priv/liberocksdb.so \
+    && ldd "$nif" | grep -F "librocksdb.so.${ROCKSDB_VERSION%%.*} => /usr/local/lib/" \
+    && erl -noshell -pa _build/default/lib/rocksdb/ebin -eval ' \
+         {ok, Db} = rocksdb:open("/tmp/selftest/db", [{create_if_missing, true}]), \
+         ok = rocksdb:put(Db, <<"k">>, <<"v">>, []), \
+         {ok, <<"v">>} = rocksdb:get(Db, <<"k">>, []), \
+         ok = rocksdb:close(Db), \
+         io:format("rocksdb selftest ok~n"), halt(0).' \
+    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3
+WORKDIR /
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula CI build image for Erlang services that link erlang rocksdb: macula-ci-otp (OTP 28.4.3) plus a prebuilt shared librocksdb 11.1.2, the tree erlang rocksdb 3.1.2 bundles; ERLANG_ROCKSDB_OPTS=-DWITH_SYSTEM_ROCKSDB=ON"
+
+# ---------------------------------------------------------------------------
+FROM ${PQ_RUNTIME} AS macula-pq-runtime-rocksdb
+
+# A failed first command in a pipe (curl, tar, ldd) must fail the step.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ROCKSDB_VERSION
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      libsnappy1v5 \
+      liblz4-1 \
+      libzstd1 \
+      zlib1g \
+      libbz2-1.0 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=librocksdb /out/lib/ /usr/local/lib/
+RUN ldconfig \
+    && ldconfig -p | grep -F "librocksdb.so.${ROCKSDB_VERSION%%.*} " \
+    && ! ldd "/usr/local/lib/librocksdb.so.${ROCKSDB_VERSION}" | grep -F "not found" \
+    && echo "librocksdb ${ROCKSDB_VERSION} resolves"
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula runtime base for releases that link erlang rocksdb: macula-pq-runtime (Debian trixie, OpenSSL 3.5+ ML-DSA) plus shared librocksdb 11.1.2 and its compression libraries"
