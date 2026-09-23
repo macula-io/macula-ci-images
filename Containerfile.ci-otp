@@ -16,7 +16,24 @@
 ARG OTP_VERSION=28.4.2
 ARG DEBIAN_VERSION=trixie-20260610-slim
 
+# ⚠ EVERY TOOL IN THE RELEASE PATH IS PINNED EXACTLY, and the build refuses
+# to finish on anything else. This image builds and publishes releases, and
+# we lost a hex publish to an unpinned tool (rebar3_hex 7.3.0) that moved
+# under us overnight. Both of these used to float: rust followed `stable'
+# and rebar3 came from S3's unversioned latest, so any rebuild could change
+# the compiler every consumer builds with, with no commit anywhere.
+# Bump one by editing it here, in its own commit, with the reason.
+ARG REBAR3_VERSION=3.27.0
+# sha256 of the release asset erlang/rebar3 publishes for REBAR3_VERSION
+# (GitHub's own asset digest); must change together with it.
+ARG REBAR3_SHA256=af85aab41f9fd74bdd6341ebdf6fe9c88077aab9f8eac82371583fa02f2b0bdf
+ARG RUST_VERSION=1.98.1
+
 FROM docker.io/hexpm/erlang:${OTP_VERSION}-debian-${DEBIAN_VERSION}
+
+ARG REBAR3_VERSION
+ARG REBAR3_SHA256
+ARG RUST_VERSION
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
       build-essential \
@@ -35,14 +52,20 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
+    && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
     && rustc --version && cargo --version
 
-# rebar3 from the canonical S3 binary rather than a version lookup, because the
-# lookup trips on GitHub's pagination cap.
-RUN curl -fsSL -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 \
-    && chmod +x /usr/local/bin/rebar3 && rebar3 version
+# rebar3 from its exact release asset, checked against its sha256, so a
+# changed or substituted binary fails the build rather than shipping.
+RUN curl -fsSL -o /usr/local/bin/rebar3 \
+      "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3" \
+    && echo "${REBAR3_SHA256}  /usr/local/bin/rebar3" | sha256sum -c - \
+    && chmod +x /usr/local/bin/rebar3 \
+    && rebar3 version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && rebar3 version
 
 # Refuse to ship an image that cannot do the one thing it exists for. An image
 # that silently lost ML-DSA would take every consumer's CI green while the wire

@@ -8,7 +8,7 @@ Two images, published to `ghcr.io/macula-io`:
 | Image | For | Contains |
 |---|---|---|
 | `macula-ci-pq` | CI build and test, **mix** services | Elixir 1.18.4 / OTP 28.1.1 on Debian trixie, OpenSSL 3.5+, hex, rebar3, Rust |
-| `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.2** (the team standard) on Debian trixie, OpenSSL 3.5+, rebar3, Rust |
+| `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.2** (the team standard) on Debian trixie, OpenSSL 3.5+, rebar3 **3.27.0** (sha256-checked), Rust **1.98.1**, all pinned exactly |
 | `macula-pq-runtime` | release runtime stage | Debian trixie, OpenSSL 3.5+, the runtime libraries a release links |
 
 ## Why this repo exists
@@ -75,13 +75,20 @@ hourly nor finds anything new most of the time. Daily is where the cadence stops
 buying anything. To pick up a specific CVE sooner, `workflow_dispatch` is
 immediate and exact.
 
-It does **not** churn consumers: layers are content-addressed and cached, so a
-day where nothing moved upstream reproduces the same digest and nobody re-pulls.
-A new image reaches consumers exactly when a package actually changed.
+⚠ **What the rebuild actually does today, measured 2026-09-23:** every step
+is served from the build cache (`cache-from: type=gha`), and the base image is
+pinned to a dated Debian snapshot, so a scheduled rebuild reproduces the same
+LAYERS and picks up no package updates. Only the build-date label changes,
+which gives each rebuild a new digest. The `macula-ci-otp` images tagged
+20260920-2117 and 20260923-0912 have identical layers. Whether the rebuild
+should refresh packages is an open decision, not something this file claims.
 
-Each build publishes `:latest` and a `:YYYYMMDD-HHmm` tag, so a consumer that
-needs to escape a bad rebuild has something to pin to. Pinning to a digest is
-stricter and also works.
+Each build publishes `:latest` and a `:YYYYMMDD-HHmm` tag. **Consumers pin
+`:YYYYMMDD-HHmm@sha256:<digest>`, never `:latest`**: the tag says when, the
+digest makes it immutable, and a new toolchain reaches a consumer only through
+a commit in that consumer. The tools inside `macula-ci-otp` are pinned
+exactly in `Containerfile.ci-otp`, and the build fails rather than publish a
+different one.
 
 The tag carries the time, not just the date, and that is **not** about the
 schedule: push and `workflow_dispatch` builds land on the same day as the
