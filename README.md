@@ -8,7 +8,7 @@ Two images, published to `ghcr.io/macula-io`:
 | Image | For | Contains |
 |---|---|---|
 | `macula-ci-pq` | CI build and test, **mix** services | Elixir 1.18.4 / OTP 28.1.1 on Debian trixie, OpenSSL 3.5+, hex, rebar3, Rust |
-| `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.2** (the team standard) on Debian trixie, OpenSSL 3.5+, rebar3 **3.27.0** (sha256-checked), Rust **1.98.1**, all pinned exactly |
+| `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.3** (the team standard) on Debian trixie-20260918, OpenSSL 3.5+, rebar3 **3.27.0** (sha256-checked), Rust **1.98.1**, all pinned exactly |
 | `macula-pq-runtime` | release runtime stage | Debian trixie, OpenSSL 3.5+, the runtime libraries a release links |
 
 ## Why this repo exists

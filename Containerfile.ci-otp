@@ -4,17 +4,18 @@
 # > This exists so no pipeline builds OpenSSL or OTP from source, and so the
 # > Erlang services build on the OTP version the team actually standardised on.
 #
-# ⚠ OTP 28.4.2, NOT 28.1. The team standard is 28.4.2 and another major or minor
-# is drift. macula-station's CI was pinned to 28.1 and built it from source,
-# which is how the gap survived: a version nobody chose, rebuilt every run.
-# Neptunus declined to call a commit CI-verified partly for that reason.
+# ⚠ OTP 28.4.3, the team standard since 2026-09-23. It moved from 28.4.2
+# because hexpm publishes new dated Debian bases only for the newest patch of
+# each OTP minor: 28.4.2 stopped at trixie-20260610, so staying on it meant
+# never taking another Debian security update. Any other OTP is drift, and the
+# build below refuses to finish on one.
 #
 # ⚠ TRIXIE IS LOAD-BEARING. The 11.x wire signs with ML-DSA-87/ML-KEM, which
 # arrived in OpenSSL 3.5. Bookworm ships 3.0, where the crypto NIF dies with
 # evp.c "Bad key type" on the first PQ keygen. hexpm publishes the trixie
 # variant of this OTP; check the tag exists before bumping.
-ARG OTP_VERSION=28.4.2
-ARG DEBIAN_VERSION=trixie-20260610-slim
+ARG OTP_VERSION=28.4.3
+ARG DEBIAN_VERSION=trixie-20260918-slim
 
 # ⚠ EVERY TOOL IN THE RELEASE PATH IS PINNED EXACTLY, and the build refuses
 # to finish on anything else. This image builds and publishes releases, and
@@ -31,6 +32,7 @@ ARG RUST_VERSION=1.98.1
 
 FROM docker.io/hexpm/erlang:${OTP_VERSION}-debian-${DEBIAN_VERSION}
 
+ARG OTP_VERSION
 ARG REBAR3_VERSION
 ARG REBAR3_SHA256
 ARG RUST_VERSION
@@ -71,10 +73,12 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
 # that silently lost ML-DSA would take every consumer's CI green while the wire
 # fails, which is this estate's signature failure.
 RUN openssl version \
+    && erl -noshell -eval 'io:format("~s", [element(2, file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])))]), halt().' \
+      | grep -qx "${OTP_VERSION}" \
     && erl -noshell -eval 'io:format("OTP ~s~n",[erlang:system_info(otp_release)]),halt().' \
     && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
          true -> io:format("mldsa87 ok~n"), halt(0); \
          false -> io:format("mldsa87 MISSING~n"), halt(1) end.'
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
-LABEL org.opencontainers.image.description="Macula CI build image for Erlang/rebar3 services: OTP 28.4.2 on Debian trixie with OpenSSL 3.5+ (ML-DSA), rebar3 and a Rust toolchain"
+LABEL org.opencontainers.image.description="Macula CI build image for Erlang/rebar3 services: OTP 28.4.3 on Debian trixie with OpenSSL 3.5+ (ML-DSA), rebar3 3.27.0 and Rust 1.98.1, all pinned exactly"
