@@ -75,13 +75,21 @@ hourly nor finds anything new most of the time. Daily is where the cadence stops
 buying anything. To pick up a specific CVE sooner, `workflow_dispatch` is
 immediate and exact.
 
-⚠ **What the rebuild actually does today, measured 2026-09-23:** every step
-is served from the build cache (`cache-from: type=gha`), and the base image is
-pinned to a dated Debian snapshot, so a scheduled rebuild reproduces the same
-LAYERS and picks up no package updates. Only the build-date label changes,
-which gives each rebuild a new digest. The `macula-ci-otp` images tagged
-20260920-2117 and 20260923-0912 have identical layers. Whether the rebuild
-should refresh packages is an open decision, not something this file claims.
+**How the base stays current.** Every build resolves the newest dated Debian
+snapshot published for the image's exact pinned toolchain
+(`scripts/newest_dated_base.py`, e.g. `hexpm/erlang:28.4.3-debian-trixie-YYYYMMDD-slim`),
+builds on it, and stamps it on the image as the `io.macula.debian-base` label.
+The Containerfile's own `DEBIAN_VERSION` is only the default for local builds.
+The daily build is cache-served, so it reproduces the same layers until the
+base moves; a weekly build (Sunday 03:00 UTC) runs uncached. A base that cannot
+be resolved fails the build rather than falling back to the old one.
+
+`scripts/test_new_base_changes_layers.sh` is the proof that this moves
+anything: it builds one Containerfile on two dated bases and refuses unless both
+pass their tool assertions and every layer, base included, differs. (Before
+this, the scheduled rebuild reproduced identical layers from cache every day:
+the ci-otp images tagged 20260920-2117 and 20260923-0912 were layer-for-layer
+the same.)
 
 Each build publishes `:latest` and a `:YYYYMMDD-HHmm` tag. **Consumers pin
 `:YYYYMMDD-HHmm@sha256:<digest>`, never `:latest`**: the tag says when, the

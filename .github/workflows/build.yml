@@ -3,8 +3,9 @@
 # ⚠ THE SCHEDULE IS THE POINT, not the push trigger. A base image's job is to
 # carry current OS security updates. Built only on change, it rots quietly:
 # nobody edits a Containerfile for months while Debian ships CVE fixes nobody
-# picks up. The weekly rebuild is what stops that, and it is the reason this
-# repo is worth having at all rather than a Containerfile in a service repo.
+# picks up. The scheduled rebuild onto the newest dated base (resolved per
+# image below) is what stops that, and it is the reason this repo is worth
+# having at all rather than a Containerfile in a service repo.
 name: build base images
 
 on:
@@ -26,6 +27,12 @@ on:
     # Daily is where the cadence stops buying anything. If a specific CVE ever
     # needs picking up sooner, workflow_dispatch is immediate and exact.
     - cron: '0 4 * * *'
+    # WEEKLY, Sunday 03:00 UTC, UNCACHED. The daily build is served from the
+    # layer cache, so on a day the base did not move it reproduces the same
+    # layers (measured: the 20260920 and 20260923 ci-otp images had identical
+    # layers). This one re-runs every step. It is a separate cron so the build
+    # step below can tell the two apart by `github.event.schedule'.
+    - cron: '0 3 * * 0'
   workflow_dispatch:
 
 permissions:
@@ -59,6 +66,20 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
+
+      # The Debian base MOVES; the tools on top of it do not. The Containerfile
+      # pins OTP, Elixir, rebar3 and Rust exactly; this resolves the newest
+      # dated Debian snapshot hexpm (or Debian) publishes for exactly that
+      # pinned toolchain, so security updates land without anyone editing a
+      # file. The Containerfile's own DEBIAN_VERSION is only the local-build
+      # default. An unresolvable base FAILS the job: the assignment below is
+      # its own statement, so the resolver's exit status stops the step.
+      - name: Resolve the newest dated base
+        id: base
+        run: |
+          debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
+          echo "debian=$debian" >> "$GITHUB_OUTPUT"
+          echo "Building ${{ matrix.image }} on DEBIAN_VERSION=$debian"
 
       - uses: docker/login-action@v3
         with:
@@ -94,7 +115,14 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # The resolved base is stamped on the image, so what it was built on
+          # is readable from the image itself, not only from this run's log.
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.macula.debian-base=${{ steps.base.outputs.debian }}
+          build-args: |
+            DEBIAN_VERSION=${{ steps.base.outputs.debian }}
+          no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,scope=${{ matrix.image }},mode=max
           provenance: false
