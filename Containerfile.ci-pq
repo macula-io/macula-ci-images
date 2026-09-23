@@ -15,13 +15,53 @@
 # crypto NIF dies with evp.c "Bad key type" on the first PQ keygen. Verified in
 # this image: openssl 3.5.6 and crypto:supports(public_keys) contains mldsa87.
 #
-# Bump the toolchain by moving these three ARGs. hexpm publishes the trixie
+# Bump the toolchain by moving these ARGs. hexpm publishes the trixie
 # variant of each Elixir/OTP pair; check the tag exists before bumping.
-ARG ELIXIR_VERSION=1.18.4
-ARG OTP_VERSION=28.1.1
-ARG DEBIAN_VERSION=trixie-20260610-slim
+#
+# ⚠ OTP 28.4.3, the team standard (2026-09-23), NOT 28.1.1. This image carried
+# 28.1.1 while macula-ci-otp and every rebar3 repo were on 28.4.x: two OTPs in
+# one estate, chosen by which image a repo happened to use.
+#
+# ⚠ ELIXIR 1.19.6, not 1.18.4, and that is forced by the base: hexpm publishes
+# 1.18.4 on OTP 28.4.3 only up to trixie-20260610, and on the newest dated
+# base (trixie-20260918) only 1.19.6 and 1.20.4. Staying on 1.18.4 meant never
+# taking another Debian security update.
+ARG ELIXIR_VERSION=1.19.6
+ARG OTP_VERSION=28.4.3
+ARG DEBIAN_VERSION=trixie-20260918-slim
+
+# ⚠ EVERY TOOL IN THE BUILD PATH IS PINNED EXACTLY, and the build refuses to
+# finish on anything else. Rust followed `stable', rebar3 came from S3's
+# unversioned latest, and `mix local.hex' / `mix local.rebar' each fetched
+# whatever was newest, so any rebuild could change what every consumer builds
+# with, with no commit anywhere. It had already split: mix built rebar deps
+# with its own rebar3 3.25.1 while /usr/local/bin/rebar3 was 3.27.0. Mix now
+# uses the one pinned rebar3. Bump one by editing it here, in its own commit.
+ARG REBAR3_VERSION=3.27.0
+# sha256 of the release asset erlang/rebar3 publishes for REBAR3_VERSION
+# (GitHub's own asset digest); must change together with it.
+ARG REBAR3_SHA256=af85aab41f9fd74bdd6341ebdf6fe9c88077aab9f8eac82371583fa02f2b0bdf
+ARG RUST_VERSION=1.98.1
+# Hex, built for exactly this Elixir and OTP (installs/1.19.0/hex-2.5.1-otp-28),
+# checked against the sha512 hex.pm publishes for it in
+# https://builds.hex.pm/installs/hex.csv. An archive compiled for an older OTP
+# fails to LOAD on OTP 28 ("re-compile with an Erlang/OTP 28 compiler"), which
+# is why the build runs `mix hex.info', not just the install.
+ARG HEX_VERSION=2.5.1
+ARG HEX_ELIXIR_BUILD=1.19.0
+ARG HEX_OTP_BUILD=28
+ARG HEX_SHA512=b97d99a4d137bfa7fbd2c70e141f345e911d45ad541c2e8f8cd500edb0d8d682eb52463a3ccd85cfc18e141b847d4f6a03534e2a0dbd798014c1ed641572cc8f
 
 FROM docker.io/hexpm/elixir:${ELIXIR_VERSION}-erlang-${OTP_VERSION}-debian-${DEBIAN_VERSION}
+
+ARG OTP_VERSION
+ARG REBAR3_VERSION
+ARG REBAR3_SHA256
+ARG RUST_VERSION
+ARG HEX_VERSION
+ARG HEX_ELIXIR_BUILD
+ARG HEX_OTP_BUILD
+ARG HEX_SHA512
 
 # Build tooling the Macula services actually use. git is needed because some
 # deps resolve from git; the rust toolchain because several carry NIFs.
@@ -45,16 +85,36 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
+    && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
     && rustc --version && cargo --version
 
-# hex and rebar3, so no pipeline spends a step installing them. rebar3 comes
-# from the canonical S3 binary rather than a version lookup, because the lookup
-# trips on GitHub's pagination cap.
-RUN mix local.hex --force && mix local.rebar --force \
-    && curl -fsSL -o /usr/local/bin/rebar3 https://s3.amazonaws.com/rebar3/rebar3 \
-    && chmod +x /usr/local/bin/rebar3
+# rebar3 from its exact release asset, checked against its sha256; then mix is
+# pointed at that same binary, so there is one rebar3 in this image, not two.
+RUN curl -fsSL -o /usr/local/bin/rebar3 \
+      "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3" \
+    && echo "${REBAR3_SHA256}  /usr/local/bin/rebar3" | sha256sum -c - \
+    && chmod +x /usr/local/bin/rebar3 \
+    && rebar3 version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && mix local.rebar rebar3 /usr/local/bin/rebar3 --force \
+    && mix_rebar3="$(elixir -e 'IO.puts(Mix.Rebar.rebar_cmd(:rebar3))')" \
+    && "$mix_rebar3" version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && echo "mix uses $mix_rebar3: $("$mix_rebar3" version)"
+
+# hex from its exact archive, checked against its sha512, then made to LOAD
+# (mix hex.info runs Hex code, so an archive built for another OTP fails here).
+RUN archive="hex-${HEX_VERSION}-otp-${HEX_OTP_BUILD}.ez" \
+    && curl -fsSL -o "/tmp/$archive" \
+      "https://builds.hex.pm/installs/${HEX_ELIXIR_BUILD}/$archive" \
+    && echo "${HEX_SHA512}  /tmp/$archive" | sha512sum -c - \
+    && mix archive.install "/tmp/$archive" --force \
+    && rm "/tmp/$archive" \
+    && mix hex.info > /tmp/hex-info.txt \
+    && grep -qE "^Hex: +${HEX_VERSION}$" /tmp/hex-info.txt \
+    && grep -qE "^OTP: +${OTP_VERSION}$" /tmp/hex-info.txt \
+    && cat /tmp/hex-info.txt && rm /tmp/hex-info.txt
 
 # Refuse to ship an image that cannot do the one thing it exists for. A base
 # image that silently lost ML-DSA would take every consumer's CI green while
@@ -62,9 +122,11 @@ RUN mix local.hex --force && mix local.rebar --force \
 RUN openssl version \
     && rustc --version \
     && cargo --version \
+    && erl -noshell -eval 'io:format("~s", [element(2, file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])))]), halt().' \
+      | grep -qx "${OTP_VERSION}" \
     && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
          true -> io:format("mldsa87 ok~n"), halt(0); \
          false -> io:format("mldsa87 MISSING~n"), halt(1) end.'
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
-LABEL org.opencontainers.image.description="Macula CI build image: Elixir/OTP on Debian trixie with OpenSSL 3.5+ (ML-DSA), hex, rebar3 and a Rust toolchain for NIF deps"
+LABEL org.opencontainers.image.description="Macula CI build image for mix services: Elixir 1.19.6 / OTP 28.4.3 on Debian trixie with OpenSSL 3.5+ (ML-DSA), and hex 2.5.1, rebar3 3.27.0 and Rust 1.98.1 pinned exactly"
