@@ -99,7 +99,8 @@ RUN curl -fsSL -o /usr/local/bin/rebar3 \
     && chmod +x /usr/local/bin/rebar3 \
     && rebar3 version | grep -qF "rebar ${REBAR3_VERSION} " \
     && mix local.rebar rebar3 /usr/local/bin/rebar3 --force \
-    && mix_rebar3="$(elixir -e 'IO.puts(Mix.Rebar.rebar_cmd(:rebar3))')" \
+    && mix_rebar3="$(find "${MIX_HOME:-$HOME/.mix}/elixir" -name rebar3 -type f)" \
+    && [ "$(printf '%s\n' "$mix_rebar3" | wc -l)" -eq 1 ] \
     && "$mix_rebar3" version | grep -qF "rebar ${REBAR3_VERSION} " \
     && echo "mix uses $mix_rebar3: $("$mix_rebar3" version)"
 
