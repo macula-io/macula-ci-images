@@ -8,7 +8,7 @@
 # built against OpenSSL 3.5+ links libcrypto.so.3 dynamically, so the RUNTIME
 # stage's OpenSSL is what serves ML-DSA at run time. Put this on bookworm and
 # the service starts, connects, and fails every PQ handshake.
-ARG DEBIAN_VERSION=trixie-20260610-slim
+ARG DEBIAN_VERSION=trixie-20260918-slim
 
 FROM docker.io/library/debian:${DEBIAN_VERSION}
 
