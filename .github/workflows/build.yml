@@ -57,6 +57,12 @@ jobs:
         include:
           - image: macula-ci-pq
             file: Containerfile.ci-pq
+          # Elixir 1.18.4 on OTP 28.4.3, for mix services that cannot release
+          # on 1.19 yet (see Containerfile.ci-pq-ex118). Same package, tags
+          # prefixed ex118-, so macula-ci-pq:latest stays the 1.19 image.
+          - image: macula-ci-pq
+            file: Containerfile.ci-pq-ex118
+            tag_prefix: ex118-
           - image: macula-ci-otp
             file: Containerfile.ci-otp
           - image: macula-pq-runtime
@@ -79,7 +85,7 @@ jobs:
         run: |
           debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
-          echo "Building ${{ matrix.image }} on DEBIAN_VERSION=$debian"
+          echo "Building ${{ matrix.image }} (${{ matrix.file }}) on DEBIAN_VERSION=$debian"
 
       - uses: docker/login-action@v3
         with:
@@ -104,8 +110,8 @@ jobs:
           # rather than to a known image. A moving tag that LOOKS immutable is
           # worse than no tag, so the time stays in it at any cadence.
           tags: |
-            type=raw,value=latest
-            type=raw,value={{date 'YYYYMMDD-HHmm'}}
+            type=raw,value=${{ matrix.tag_prefix }}latest
+            type=raw,value=${{ matrix.tag_prefix }}{{date 'YYYYMMDD-HHmm'}}
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -123,6 +129,6 @@ jobs:
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
           no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          cache-from: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }}
+          cache-to: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }},mode=max
           provenance: false

@@ -1,0 +1,127 @@
+# macula-ci-pq, ex118 variant — the BUILD image for mix services that cannot
+# yet release on Elixir 1.19: Elixir 1.18.4 compiled on OTP 28.4.3.
+#
+# > This exists so macula-realm and macula-portal build, test AND release on
+# > one toolchain while Elixir 1.19's `mix release' is broken for them.
+#
+# Elixir 1.19 (and 1.20/main) fails `mix release' with "Unknown application
+# :erts" when a dependency lists erts among its applications, which horus
+# does (khepri -> reckon_db). Saturnus is filing it upstream. Until it is
+# fixed, realm and portal stay on Elixir 1.18.4 (Raf, 2026-09-23). hexpm
+# publishes no Elixir 1.18.4 on OTP 28.4.3, so Elixir is compiled here, on
+# the exact OTP the team standardised on. When the upstream fix ships, the
+# consumers move to the plain macula-ci-pq (Elixir 1.19.x) and this file goes.
+#
+# Published to the SAME package as macula-ci-pq, under `ex118-' tags
+# (ex118-latest, ex118-YYYYMMDD-HHmm), so macula-ci-pq:latest stays 1.19.
+#
+# Every tool is pinned exactly and asserted; the build refuses to finish on
+# anything else. Bump one by editing it here, in its own commit.
+ARG OTP_VERSION=28.4.3
+ARG DEBIAN_VERSION=trixie-20260918-slim
+
+# Elixir from its tagged source. The release publishes no source tarball, so
+# this is GitHub's archive of tag v1.18.4 (commit 7b20c281d521), checked
+# against the sha256 it had on 2026-09-23 (identical over repeated fetches).
+ARG ELIXIR_VERSION=1.18.4
+ARG ELIXIR_SRC_SHA256=8e136c0a92160cdad8daa74560e0e9c6810486bd232fbce1709d40fcc426b5e0
+
+ARG REBAR3_VERSION=3.27.0
+ARG REBAR3_SHA256=af85aab41f9fd74bdd6341ebdf6fe9c88077aab9f8eac82371583fa02f2b0bdf
+ARG RUST_VERSION=1.98.1
+# Hex 2.5.1. hex.csv has no OTP-28 build for Elixir 1.18; the newest that
+# applies is installs/1.18.0/hex-2.5.1-otp-27, which is also what
+# `mix local.hex' picks for Elixir 1.18 on OTP 28. OTP-27 beams load on
+# OTP 28, and `mix hex.info' below proves it rather than assuming it.
+ARG HEX_VERSION=2.5.1
+ARG HEX_ELIXIR_BUILD=1.18.0
+ARG HEX_OTP_BUILD=27
+ARG HEX_SHA512=30adfadd7625dc892724bbb7333d26eb574ce5198fdcce43eb5fb5215b95138533ce6b4d4b0156ac6ec905d51a77e03575137693c6ce0adf9aff27ab46a29e46
+
+FROM docker.io/hexpm/erlang:${OTP_VERSION}-debian-${DEBIAN_VERSION}
+
+ARG OTP_VERSION
+ARG ELIXIR_VERSION
+ARG ELIXIR_SRC_SHA256
+ARG REBAR3_VERSION
+ARG REBAR3_SHA256
+ARG RUST_VERSION
+ARG HEX_VERSION
+ARG HEX_ELIXIR_BUILD
+ARG HEX_OTP_BUILD
+ARG HEX_SHA512
+
+# Elixir needs a UTF-8 locale, as the hexpm Elixir images set.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      curl \
+      ca-certificates \
+      pkg-config \
+      libssl-dev \
+      openssl \
+      cmake \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Elixir, compiled by this image's OTP 28.4.3.
+RUN curl -fsSL -o /tmp/elixir.tar.gz \
+      "https://github.com/elixir-lang/elixir/archive/refs/tags/v${ELIXIR_VERSION}.tar.gz" \
+    && echo "${ELIXIR_SRC_SHA256}  /tmp/elixir.tar.gz" | sha256sum -c - \
+    && mkdir /tmp/elixir-src \
+    && tar -xzf /tmp/elixir.tar.gz -C /tmp/elixir-src --strip-components=1 \
+    && make -C /tmp/elixir-src compile \
+    && make -C /tmp/elixir-src install PREFIX=/usr/local \
+    && rm -rf /tmp/elixir-src /tmp/elixir.tar.gz \
+    && elixir --short-version | grep -qx "${ELIXIR_VERSION}" \
+    && elixir --version | grep -qF "Elixir ${ELIXIR_VERSION} (compiled with Erlang/OTP 28)" \
+    && elixir --version | tail -1
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
+    && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
+    && rustc --version && cargo --version
+
+# rebar3 from its exact release asset, checked against its sha256; then mix is
+# pointed at that same binary, so there is one rebar3 in this image, not two.
+RUN curl -fsSL -o /usr/local/bin/rebar3 \
+      "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3" \
+    && echo "${REBAR3_SHA256}  /usr/local/bin/rebar3" | sha256sum -c - \
+    && chmod +x /usr/local/bin/rebar3 \
+    && rebar3 version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && mix local.rebar rebar3 /usr/local/bin/rebar3 --force \
+    && mix_rebar3="$(find "${MIX_HOME:-$HOME/.mix}/elixir" -name rebar3 -type f)" \
+    && [ "$(printf '%s\n' "$mix_rebar3" | wc -l)" -eq 1 ] \
+    && "$mix_rebar3" version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && echo "mix uses $mix_rebar3: $("$mix_rebar3" version)"
+
+# hex from its exact archive, checked against its sha512, then made to LOAD
+# (mix hex.info runs Hex code, so an archive that cannot load on OTP 28 fails).
+RUN archive="hex-${HEX_VERSION}-otp-${HEX_OTP_BUILD}.ez" \
+    && curl -fsSL -o "/tmp/$archive" \
+      "https://builds.hex.pm/installs/${HEX_ELIXIR_BUILD}/$archive" \
+    && echo "${HEX_SHA512}  /tmp/$archive" | sha512sum -c - \
+    && mix archive.install "/tmp/$archive" --force \
+    && rm "/tmp/$archive" \
+    && mix hex.info > /tmp/hex-info.txt \
+    && grep -qE "^Hex: +${HEX_VERSION}$" /tmp/hex-info.txt \
+    && grep -qE "^Elixir: +${ELIXIR_VERSION}$" /tmp/hex-info.txt \
+    && grep -qE "^OTP: +${OTP_VERSION}$" /tmp/hex-info.txt \
+    && cat /tmp/hex-info.txt && rm /tmp/hex-info.txt
+
+# Refuse to ship an image that cannot do the one thing it exists for.
+RUN openssl version \
+    && erl -noshell -eval 'io:format("~s", [element(2, file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])))]), halt().' \
+      | grep -qx "${OTP_VERSION}" \
+    && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
+         true -> io:format("mldsa87 ok~n"), halt(0); \
+         false -> io:format("mldsa87 MISSING~n"), halt(1) end.'
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula CI build image for mix services on Elixir 1.18 (ex118): Elixir 1.18.4 compiled on OTP 28.4.3, Debian trixie, OpenSSL 3.5+ (ML-DSA); hex 2.5.1, rebar3 3.27.0 and Rust 1.98.1 pinned exactly"
