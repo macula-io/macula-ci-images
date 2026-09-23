@@ -13,6 +13,7 @@ Two images, published to `ghcr.io/macula-io`:
 | `macula-pq-runtime` | release runtime stage | Debian trixie, OpenSSL 3.5+, the runtime libraries a release links |
 | `macula-ci-otp-rocksdb` | CI build, rebar3 services that link erlang **rocksdb** (barrel_docdb via mcl-om) | `macula-ci-otp` plus a prebuilt shared **librocksdb 11.1.2** (the tree erlang rocksdb 3.1.2 bundles) in `/usr/local`, and `ERLANG_ROCKSDB_OPTS=-DWITH_SYSTEM_ROCKSDB=ON`: a build compiles only the NIF |
 | `macula-pq-runtime-rocksdb` | release runtime stage for those services | `macula-pq-runtime` plus `librocksdb.so.11` and its compression libraries |
+| `macula-ci-pq-ex118-rocksdb` | CI build, **mix** services on Elixir 1.18 that link erlang rocksdb (macula-portal, via barrel_docdb) | `macula-ci-pq` ex118 plus the same librocksdb and env; runs on `macula-pq-runtime-rocksdb` |
 
 ## Why this repo exists
 
@@ -69,7 +70,8 @@ is never populated and `docker create` fails.
 `Containerfile.rocksdb` builds RocksDB **once**, on a GitHub-hosted runner, so no
 service compiles it again (10-20 minutes of every core per build; four at once
 put host00 at load 93 on 2026-09-24). A service that links erlang `rocksdb`
-builds in `macula-ci-otp-rocksdb` and runs on `macula-pq-runtime-rocksdb`:
+builds in `macula-ci-otp-rocksdb` (rebar3) or `macula-ci-pq-ex118-rocksdb` (mix, Elixir
+1.18) and runs on `macula-pq-runtime-rocksdb`:
 
 ```dockerfile
 FROM ghcr.io/macula-io/macula-ci-otp-rocksdb@sha256:<digest> AS builder

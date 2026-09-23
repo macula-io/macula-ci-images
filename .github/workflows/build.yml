@@ -147,7 +147,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [macula-ci-otp-rocksdb, macula-pq-runtime-rocksdb]
+        target: [macula-ci-otp-rocksdb, macula-pq-runtime-rocksdb, macula-ci-pq-ex118-rocksdb]
 
     steps:
       - uses: actions/checkout@v4
@@ -166,15 +166,20 @@ jobs:
         id: bases
         run: |
           set -euo pipefail
+          # digest <package> [tag]: the package's current digest at that tag.
           digest() {
-            d=$(docker buildx imagetools inspect "ghcr.io/macula-io/$1:latest" --format '{{json .Manifest}}' | jq -r .digest)
-            case "$d" in sha256:*) echo "ghcr.io/macula-io/$1@$d" ;; *) echo "REFUSED: no digest for $1:latest" >&2; exit 1 ;; esac
+            d=$(docker buildx imagetools inspect "ghcr.io/macula-io/$1:${2:-latest}" --format '{{json .Manifest}}' | jq -r .digest)
+            case "$d" in sha256:*) echo "ghcr.io/macula-io/$1@$d" ;; *) echo "REFUSED: no digest for $1:${2:-latest}" >&2; exit 1 ;; esac
           }
           ci_otp=$(digest macula-ci-otp)
           pq_runtime=$(digest macula-pq-runtime)
-          echo "ci_otp=$ci_otp" >> "$GITHUB_OUTPUT"
-          echo "pq_runtime=$pq_runtime" >> "$GITHUB_OUTPUT"
-          echo "Building ${{ matrix.target }} on CI_OTP=$ci_otp PQ_RUNTIME=$pq_runtime"
+          ci_pq_ex118=$(digest macula-ci-pq ex118-latest)
+          {
+            echo "ci_otp=$ci_otp"
+            echo "pq_runtime=$pq_runtime"
+            echo "ci_pq_ex118=$ci_pq_ex118"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building ${{ matrix.target }} on CI_OTP=$ci_otp PQ_RUNTIME=$pq_runtime CI_PQ_EX118=$ci_pq_ex118"
 
       - name: Tags
         id: meta
@@ -198,9 +203,11 @@ jobs:
             ${{ steps.meta.outputs.labels }}
             io.macula.base.ci-otp=${{ steps.bases.outputs.ci_otp }}
             io.macula.base.pq-runtime=${{ steps.bases.outputs.pq_runtime }}
+            io.macula.base.ci-pq-ex118=${{ steps.bases.outputs.ci_pq_ex118 }}
           build-args: |
             CI_OTP=${{ steps.bases.outputs.ci_otp }}
             PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
+            CI_PQ_EX118=${{ steps.bases.outputs.ci_pq_ex118 }}
           no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
           # One scope for both targets: the librocksdb stage is identical in
           # both, so whichever job builds it first serves it to later runs.

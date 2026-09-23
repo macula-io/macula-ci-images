@@ -12,6 +12,11 @@
 #   librocksdb              the build, shared by both targets
 #   macula-ci-otp-rocksdb   ci-otp + librocksdb + headers, for rebar3 builds
 #   macula-pq-runtime-rocksdb  pq-runtime + librocksdb.so.11, to run releases
+#   macula-ci-pq-ex118-rocksdb ci-pq ex118 (Elixir 1.18.4) + librocksdb + headers,
+#                           for mix builds (macula-portal, via barrel_docdb)
+#
+# ci-pq ex118 and ci-otp are the same hexpm erlang 28.4.3 trixie base, so the one
+# librocksdb built below (on ci-otp) is ABI-correct in both.
 #
 # ⛔ A release built in macula-ci-otp-rocksdb RUNS ONLY on
 # macula-pq-runtime-rocksdb (or another base carrying the same librocksdb):
@@ -23,6 +28,7 @@
 # built, so these images follow the daily security rebuilds of their bases.
 ARG CI_OTP=ghcr.io/macula-io/macula-ci-otp@sha256:dd2ba6eb858a0eacedf0179300323fe5c6da46fb308d22da0ca8cfcd1f0718dc
 ARG PQ_RUNTIME=ghcr.io/macula-io/macula-pq-runtime@sha256:15a5501b7277804c5a62c93121d157773d1401d238a1bf630ef4b50fc2f1df09
+ARG CI_PQ_EX118=ghcr.io/macula-io/macula-ci-pq@sha256:6695c14c8133a23630ef26546ed0c5ccdbab40edd7cfd20d6ab772ef254ccdca
 
 # ⚠ THE SOURCE IS THE BINDING'S OWN, not upstream RocksDB's tag and not
 # Debian's package (trixie ships 9.x). The NIF is written against exactly the
@@ -143,6 +149,53 @@ WORKDIR /
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
 LABEL org.opencontainers.image.description="Macula CI build image for Erlang services that link erlang rocksdb: macula-ci-otp (OTP 28.4.3) plus a prebuilt shared librocksdb 11.1.2, the tree erlang rocksdb 3.1.2 bundles; ERLANG_ROCKSDB_OPTS=-DWITH_SYSTEM_ROCKSDB=ON"
+
+# ---------------------------------------------------------------------------
+FROM ${CI_PQ_EX118} AS macula-ci-pq-ex118-rocksdb
+
+# A failed first command in a pipe (curl, tar, ldd) must fail the step.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG ERLANG_ROCKSDB_VERSION
+ARG ROCKSDB_VERSION
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      libsnappy-dev \
+      liblz4-dev \
+      libzstd-dev \
+      zlib1g-dev \
+      libbz2-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=librocksdb /out/lib/ /usr/local/lib/
+COPY --from=librocksdb /out/include/ /usr/local/include/
+RUN ldconfig
+
+# mix compiles the rocksdb dep with rebar3, which inherits these.
+ENV ERLANG_ROCKSDB_OPTS="-DWITH_SYSTEM_ROCKSDB=ON"
+ENV ERLANG_ROCKSDB_BUILDOPTS="-j4"
+
+# The self-test goes through MIX, the way a mix service builds, not rebar3
+# alone: fetch and compile the real binding as a mix dependency, check the NIF
+# links THIS librocksdb, then open a database, write, read it back.
+WORKDIR /tmp/selftest
+RUN mkdir -p lib \
+    && printf 'defmodule Selftest.MixProject do\n  use Mix.Project\n  def project, do: [app: :selftest, version: "0.0.0", deps: [{:rocksdb, "%s"}]]\nend\n' "${ERLANG_ROCKSDB_VERSION}" > mix.exs \
+    && mix deps.get \
+    && mix compile \
+    && nif=_build/dev/lib/rocksdb/priv/liberocksdb.so \
+    && ldd "$nif" | grep -F "librocksdb.so.${ROCKSDB_VERSION%%.*} => /usr/local/lib/" \
+    && mix run --no-start -e ' \
+         {:ok, db} = :rocksdb.open(~c"/tmp/selftest/db", [create_if_missing: true]); \
+         :ok = :rocksdb.put(db, "k", "v", []); \
+         {:ok, "v"} = :rocksdb.get(db, "k", []); \
+         :ok = :rocksdb.close(db); \
+         IO.puts("rocksdb mix selftest ok")' \
+    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3
+WORKDIR /
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula CI build image for mix services that link erlang rocksdb: macula-ci-pq ex118 (Elixir 1.18.4 on OTP 28.4.3) plus a prebuilt shared librocksdb 11.1.2, the tree erlang rocksdb 3.1.2 bundles; ERLANG_ROCKSDB_OPTS=-DWITH_SYSTEM_ROCKSDB=ON"
 
 # ---------------------------------------------------------------------------
 FROM ${PQ_RUNTIME} AS macula-pq-runtime-rocksdb
