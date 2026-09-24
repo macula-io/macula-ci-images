@@ -14,6 +14,9 @@ on:
     paths-ignore:
       - '**.md'
       - 'LICENSE'
+      # Local tooling that goes into no image.
+      - 'scripts/ci_gate.sh'
+      - 'scripts/test_ci_gate.sh'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the

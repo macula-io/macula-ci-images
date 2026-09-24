@@ -89,6 +89,16 @@ Each image refuses to publish unless its self-test passes: the CI image compiles
 the real binding against the library, checks the NIF links it, and writes and
 reads a database; the runtime checks the library resolves with nothing missing.
 
+## Gating a commit locally, the way CI runs it
+
+`scripts/ci_gate.sh <repo> <sha> [workflow, default lint.yml] [job, default check]`
+runs every `run:` step of a job inside that job's own pinned image, as root, on
+a `git archive` of the commit, and exits with the job's status. It refuses a
+step it cannot reproduce (`if`, `shell`, `continue-on-error`,
+`timeout-minutes`), lists the `uses:` steps it skips, caps the container at
+`GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
+`/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:
