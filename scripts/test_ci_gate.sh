@@ -67,4 +67,62 @@ grep -qx "ran-2" <<<"$OUT" && fail "a step ran despite the refusal: $OUT"
 grep -q "if" <<<"$OUT" || fail "the refusal did not name the key: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a refused run left its workspace behind"
 
+# 4. An `if: always()` step runs after a failure, as in CI, and the job still
+#    fails; a step after the failure without it does not run.
+SHA=$(repo always '      - run: "false"
+      - run: echo skipped-after-failure
+      - name: cleanup
+        if: always()
+        run: echo cleanup-ran')
+OUT=$("$GATE" "$WORK/always" "$SHA" 2>&1) && fail "a job with a failed step exited 0: $OUT"
+grep -qx "cleanup-ran" <<<"$OUT" || fail "the if: always() step did not run after the failure: $OUT"
+grep -qx "skipped-after-failure" <<<"$OUT" && fail "a plain step ran after the failure: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "an always() run left its workspace behind"
+
+# 5. A job-level timeout-minutes bounds the whole run instead of being ignored.
+SHA=$(repo timeout '      - run: sleep 600' | tail -1)
+sed -i 's/^    runs-on: ubuntu-latest$/    runs-on: ubuntu-latest\n    timeout-minutes: 0.05/' "$WORK/timeout/.github/workflows/lint.yml"
+git -C "$WORK/timeout" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qam timeout
+SHA=$(git -C "$WORK/timeout" rev-parse HEAD)
+STARTED=$(date +%s)
+OUT=$("$GATE" "$WORK/timeout" "$SHA" 2>&1) && fail "a job past its timeout exited 0: $OUT"
+[ $(( $(date +%s) - STARTED )) -lt 120 ] || fail "timeout-minutes did not bound the run"
+grep -q "timed out" <<<"$OUT" || fail "the timeout was not reported: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a timed-out run left its workspace behind"
+
+# 6. A GitHub expression the gate cannot evaluate is refused, naming it.
+# shellcheck disable=SC2016 # a literal GitHub expression, on purpose
+SHA=$(repo expression '      - run: echo "${{ github.sha }}"')
+OUT=$("$GATE" "$WORK/expression" "$SHA" 2>&1) && fail "a step with a GitHub expression was accepted: $OUT"
+grep -q "github.sha" <<<"$OUT" || fail "the refusal did not name the expression: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a refused expression left its workspace behind"
+
+# 7. Env layers as in CI: workflow env, overridden by job env, overridden by
+#    step env; and the runner's own variables a step may read.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo layers '      - run: echo "layers=$FROM_WORKFLOW/$FROM_JOB/$FROM_STEP ws=$GITHUB_WORKSPACE ci=$CI"
+        env:
+          FROM_STEP: step-level')
+sed -i '1i env:\n  FROM_WORKFLOW: workflow-level\n  FROM_JOB: overridden-by-job' "$WORK/layers/.github/workflows/lint.yml"
+git -C "$WORK/layers" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qam layers
+SHA=$(git -C "$WORK/layers" rev-parse HEAD)
+OUT=$("$GATE" "$WORK/layers" "$SHA" 2>&1) || fail "the env layers job failed: $OUT"
+grep -qx "layers=workflow-level/job-level/step-level ws=/w ci=true" <<<"$OUT" \
+    || fail "env did not layer workflow < job < step, or the runner variables were missing: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "an env run left its workspace behind"
+
+# 8. A step's GITHUB_PATH and GITHUB_ENV lines reach the steps after it, as
+#    the runner carries them.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo carry '      - run: |
+          mkdir -p /opt/gate-bin && printf "#!/bin/sh\necho tool-found\n" > /opt/gate-bin/gate-tool
+          chmod +x /opt/gate-bin/gate-tool
+          echo /opt/gate-bin >> "$GITHUB_PATH"
+          echo "CARRIED=from-an-earlier-step" >> "$GITHUB_ENV"
+      - run: gate-tool && echo "carried=$CARRIED"')
+OUT=$("$GATE" "$WORK/carry" "$SHA" 2>&1) || fail "the carry job failed: $OUT"
+grep -qx "tool-found" <<<"$OUT" || fail "a GITHUB_PATH entry did not reach the next step: $OUT"
+grep -qx "carried=from-an-earlier-step" <<<"$OUT" || fail "a GITHUB_ENV line did not reach the next step: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a carry run left its workspace behind"
+
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

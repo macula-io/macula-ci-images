@@ -93,9 +93,13 @@ reads a database; the runtime checks the library resolves with nothing missing.
 
 `scripts/ci_gate.sh <repo> <sha> [workflow, default lint.yml] [job, default check]`
 runs every `run:` step of a job inside that job's own pinned image, as root, on
-a `git archive` of the commit, and exits with the job's status. It refuses a
-step it cannot reproduce (`if`, `shell`, `continue-on-error`,
-`timeout-minutes`), lists the `uses:` steps it skips, caps the container at
+a `git archive` of the commit, and exits with the job's status. Env layers as
+CI layers it (the runner's `CI`, `GITHUB_*`, then workflow, job and step
+`env`), and what a step writes to `GITHUB_PATH` / `GITHUB_ENV` reaches the next
+steps. An `if: always()` step runs after a failure; the job's
+`timeout-minutes` bounds the run. It refuses what it cannot reproduce (any
+other `if`, `shell`, `continue-on-error`, a step's `timeout-minutes`, and
+`${{ }}` expressions), lists the `uses:` steps it skips, caps the container at
 `GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 
