@@ -1,0 +1,86 @@
+# macula-ci-gleam — the BUILD image for the GLEAM services, as distinct from
+# macula-ci-otp (rebar3) and macula-ci-pq (mix).
+#
+# > This exists so no pipeline builds OpenSSL, OTP or the Gleam toolchain
+# > from source, and so Gleam services build on the toolchain the team
+# > standardised on: Gleam 1.18.1 on OTP 28.4.3.
+#
+# ⚠ OTP 28.4.3, the team standard since 2026-09-23 (see Containerfile.ci-otp
+# for why any other OTP is drift). TRIXIE IS LOAD-BEARING: the 11.x wire
+# signs with ML-DSA-87/ML-KEM, which arrived in OpenSSL 3.5.
+#
+# ⚠ EVERY TOOL IN THE RELEASE PATH IS PINNED EXACTLY, and the build refuses
+# to finish on anything else. Bump one by editing it here, in its own commit.
+ARG OTP_VERSION=28.4.3
+ARG DEBIAN_VERSION=trixie-20260918-slim
+ARG REBAR3_VERSION=3.27.0
+# sha256 of the release asset erlang/rebar3 publishes for REBAR3_VERSION
+ARG REBAR3_SHA256=af85aab41f9fd74bdd6341ebdf6fe9c88077aab9f8eac82371583fa02f2b0bdf
+ARG RUST_VERSION=1.98.1
+# The Gleam release tarball, sha256-checked like every other tool here.
+ARG GLEAM_VERSION=1.18.1
+ARG GLEAM_SHA256=4955a38c2e8c99457458e2471472ccd5ee3c45bd7637a315ce33bccf0dd75d9e
+
+FROM docker.io/hexpm/erlang:${OTP_VERSION}-debian-${DEBIAN_VERSION}
+
+ARG OTP_VERSION
+ARG REBAR3_VERSION
+ARG REBAR3_SHA256
+ARG RUST_VERSION
+ARG GLEAM_VERSION
+ARG GLEAM_SHA256
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+      build-essential \
+      git \
+      curl \
+      ca-certificates \
+      pkg-config \
+      libssl-dev \
+      openssl \
+      cmake \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Rust, because several macula deps are NIFs with no Erlang fallback:
+# macula_quic refuses to compile without a toolchain and says so.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
+    && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
+    && rustc --version && cargo --version
+
+# rebar3 from its exact release asset, checked against its sha256 -- the
+# Gleam services use rebar3's relx provider to ASSEMBLE their release from
+# gleam's build output (gleam owns compilation).
+RUN curl -fsSL -o /usr/local/bin/rebar3 \
+      "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3" \
+    && echo "${REBAR3_SHA256}  /usr/local/bin/rebar3" | sha256sum -c - \
+    && chmod +x /usr/local/bin/rebar3 \
+    && rebar3 version | grep -qF "rebar ${REBAR3_VERSION} " \
+    && rebar3 version
+
+# Gleam from its exact release tarball, checked against its sha256.
+RUN curl -fsSL -o /tmp/gleam.tar.gz \
+      "https://github.com/gleam-lang/gleam/releases/download/v${GLEAM_VERSION}/gleam-v${GLEAM_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+    && echo "${GLEAM_SHA256}  /tmp/gleam.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/gleam.tar.gz -C /usr/local/bin gleam \
+    && rm /tmp/gleam.tar.gz \
+    && gleam --version | grep -qx "gleam ${GLEAM_VERSION}"
+
+# Refuse to ship an image that cannot do the one thing it exists for. An
+# image that silently lost ML-DSA would take every consumer's CI green
+# while the wire fails, which is this estate's signature failure.
+RUN openssl version \
+    && erl -noshell -eval 'io:format("~s", [element(2, file:read_file(filename:join([code:root_dir(), "releases", erlang:system_info(otp_release), "OTP_VERSION"])))]), halt().' \
+      | grep -qx "${OTP_VERSION}" \
+    && erl -noshell -eval 'case lists:member(mldsa87, crypto:supports(public_keys)) of \
+         true -> io:format("mldsa87 ok~n"), halt(0); \
+         false -> io:format("mldsa87 MISSING~n"), halt(1) end.' \
+    && gleam --version
+
+LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
+LABEL org.opencontainers.image.description="Macula CI build image for Gleam services: Gleam 1.18.1 on OTP 28.4.3, Debian trixie, OpenSSL 3.5+ (ML-DSA); rebar3 3.27.0 and Rust 1.98.1 pinned exactly"

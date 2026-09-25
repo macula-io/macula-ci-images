@@ -68,6 +68,13 @@ jobs:
             tag_prefix: ex118-
           - image: macula-ci-otp
             file: Containerfile.ci-otp
+          # Gleam 1.18.1 on OTP 28.4.3, for the Gleam services (the third
+          # bookclub twin). Same tag-prefix discipline as the ex118 image:
+          # gleam118- tags, so the toolchain a consumer pins cannot drift
+          # when the image later moves to a newer Gleam.
+          - image: macula-ci-gleam
+            file: Containerfile.ci-gleam
+            tag_prefix: gleam118-
           - image: macula-pq-runtime
             file: Containerfile.pq-runtime
 
