@@ -18,6 +18,7 @@ on:
       - 'scripts/ci_gate.sh'
       - 'scripts/test_ci_gate.sh'
       - 'scripts/fixtures/**'
+      - 'scripts/test_newest_dated_base.sh'
       # The signing workflow and its self-test build no base image.
       - '.github/workflows/attest-image.yml'
       - '.github/workflows/attest-image-selftest.yml'

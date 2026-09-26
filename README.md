@@ -195,7 +195,14 @@ builds on it, and stamps it on the image as the `io.macula.debian-base` label.
 The Containerfile's own `DEBIAN_VERSION` is only the default for local builds.
 The daily build is cache-served, so it reproduces the same layers until the
 base moves; a weekly build (Sunday 03:00 UTC) runs uncached. A base that cannot
-be resolved fails the build rather than falling back to the old one.
+be resolved fails the build rather than falling back to the old one. Docker
+Hub is asked with bounded retries (5 attempts, doubling backoff) for timeouts,
+dropped connections, bodies cut off mid-read, 429 and 5xx; after the last
+attempt the build fails, naming the URL and the last error, and a 4xx fails
+at once.
+`scripts/test_newest_dated_base.sh` is its test; no workflow runs it, so run
+it before changing the resolver, as `scripts/test_ci_gate.sh` before changing
+the gate.
 
 `scripts/test_new_base_changes_layers.sh` is the proof that this moves
 anything: it builds one Containerfile on two dated bases and refuses unless both

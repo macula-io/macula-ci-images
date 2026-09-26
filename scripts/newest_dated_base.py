@@ -15,11 +15,26 @@ Prints the DEBIAN_VERSION value to build with (e.g. trixie-20260918-slim).
 Exits non-zero, naming what it looked for, when nothing matches: a base that
 cannot be resolved must stop the build, never fall back to the old one quietly.
 
+Docker Hub is asked with bounded retries: a timeout, a dropped connection, a
+429, a 5xx or a body cut off mid-read is retried with backoff, up to
+NEWEST_BASE_ATTEMPTS (5) attempts; after the last one the build fails, naming
+the URL and the last error. A 4xx other than 429 is Docker Hub's answer, not a
+hiccup, and fails at once. One read timeout, with no retry, failed the daily
+build on 2026-09-26.
+
 Usage: scripts/newest_dated_base.py Containerfile.ci-otp
+  NEWEST_BASE_ATTEMPTS=5 NEWEST_BASE_BACKOFF=2 (seconds, doubling)
+  NEWEST_BASE_TIMEOUT=30 (seconds per attempt)
+  NEWEST_BASE_HUB=https://hub.docker.com (the tests point it at a fake)
 """
+import http.client
 import json
+import math
+import os
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -55,12 +70,47 @@ def template(containerfile):
     return repo, prefix, suffix, distro
 
 
+def setting(name, default, kind):
+    raw = os.environ.get(name, default)
+    try:
+        value = kind(raw)
+    except ValueError:
+        value = None
+    if value is None or not math.isfinite(value) or value <= 0:
+        fail(f"{name}={raw!r} is not a positive {kind.__name__}")
+    return value
+
+
+def fetch_json(url):
+    attempts = setting('NEWEST_BASE_ATTEMPTS', '5', int)
+    backoff = setting('NEWEST_BASE_BACKOFF', '2', float)
+    timeout = setting('NEWEST_BASE_TIMEOUT', '30', float)
+    last = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                fail(f"{url} answered {e.code} {e.reason}")
+            last = f"{e.code} {e.reason}"
+        # A body cut off mid-read (IncompleteRead) or a 200 carrying truncated
+        # JSON is the same kind of hiccup; neither is an OSError.
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError,
+                http.client.HTTPException, json.JSONDecodeError) as e:
+            last = f"{type(e).__name__}: {getattr(e, 'reason', e)}"
+        if attempt < attempts:
+            print(f"attempt {attempt} of {attempts} failed ({last}); retrying", file=sys.stderr)
+            time.sleep(backoff * 2 ** (attempt - 1))
+    fail(f"{url} failed after {attempts} attempts; the last error: {last}")
+
+
 def hub_tags(repo, name_filter):
-    url = (f"https://hub.docker.com/v2/repositories/{repo}/tags"
+    hub = os.environ.get('NEWEST_BASE_HUB', 'https://hub.docker.com').rstrip('/')
+    url = (f"{hub}/v2/repositories/{repo}/tags"
            f"?page_size=100&name={urllib.parse.quote(name_filter)}")
     while url:
-        with urllib.request.urlopen(url, timeout=30) as resp:
-            page = json.load(resp)
+        page = fetch_json(url)
         for result in page.get('results', []):
             yield result['name']
         url = page.get('next')
