@@ -496,4 +496,27 @@ for step in number-eq string-eq-number; do
     grep -qx "  run: $step" <<<"$(tplan false)" || fail "with flag=false, $step did not run (CI runs it): $(tplan false)"
 done
 
+# 26. A throttled matrix runs EVERY combination. The throttled pass restarts
+#     the container with `podman start -a', and the fan-out loop fed each
+#     child its combinations list on stdin: the first child's run read it to
+#     EOF, so the gate ran one combination of four and reported green (macula
+#     1a686f23, Mercurius). Each combination must run and get its line, and
+#     the gate must refuse a fan-out that did not.
+# shellcheck disable=SC2016 # GitHub expressions and container-side variables, on purpose
+SHA=$(wf thrmatrix 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        k: [a, b, c]
+    steps:
+'"$(fake_rebar3 'echo "eunit-ran cpu.max=$(cat /sys/fs/cgroup/cpu.max)"')")
+OUT=$(GATE_TEST_CPUS=0.5 "$GATE" "$WORK/thrmatrix" "$SHA" 2>&1) || fail "a throttled three-combination matrix failed: $OUT"
+for k in a b c; do
+    grep -qx "matrix k=$k: passed" <<<"$OUT" || fail "combination k=$k did not run or got no line: $OUT"
+done
+[ "$(grep -c "^eunit-ran cpu.max=50000 100000" <<<"$OUT")" -eq 3 ] || fail "not every combination ran its throttled pass: $OUT"
+
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

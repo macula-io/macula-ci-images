@@ -474,9 +474,13 @@ PY
 # fail-fast, every combination runs, so one failure does not hide another.
 if [ -e "$WORK/fanout" ]; then
     local status=0 results=() c s
-    while IFS= read -r c; do
+    # The list is read on fd 3 and each child gets /dev/null on stdin: a
+    # child's run (podman start -a, in the throttled pass) otherwise reads the
+    # rest of the list to EOF, and the gate ran one combination and reported
+    # green.
+    while IFS= read -r c <&3; do
         set +e
-        GATE_MATRIX="$c" GATE_MATRIX_CHILD=1 bash "${BASH_SOURCE[0]}" "$@"
+        GATE_MATRIX="$c" GATE_MATRIX_CHILD=1 bash "${BASH_SOURCE[0]}" "$@" </dev/null
         s=$?
         set -e
         if [ "$s" -eq 0 ] && [ "${GATE_DRY_RUN:-}" = 1 ]; then
@@ -487,8 +491,16 @@ if [ -e "$WORK/fanout" ]; then
             results+=("matrix ${c}: FAILED (exit $s)")
             [ "$status" -ne 0 ] || status=$s
         fi
-    done < "$WORK/fanout"
+    done 3< "$WORK/fanout"
     printf '%s\n' "${results[@]}"
+    # Guard the outcome as well as the cause: a fan-out that reports fewer
+    # combinations than it planned is refused, never green.
+    local planned
+    planned=$(grep -c . "$WORK/fanout")
+    if [ "${#results[@]}" -ne "$planned" ]; then
+        echo "REFUSED: the matrix planned $planned combinations but $((${#results[@]})) reported"
+        exit 1
+    fi
     exit "$status"
 fi
 
