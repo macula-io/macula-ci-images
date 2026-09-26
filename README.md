@@ -97,10 +97,17 @@ runs every `run:` step of a job inside that job's own pinned image, as root, on
 a `git archive` of the commit, and exits with the job's status. Env layers as
 CI layers it (the runner's `CI`, `GITHUB_*`, then workflow, job and step
 `env`), and what a step writes to `GITHUB_PATH` / `GITHUB_ENV` reaches the next
-steps. An `if: always()` step runs after a failure; the job's
-`timeout-minutes` bounds the run. It refuses what it cannot reproduce (any
-other `if`, `shell`, `continue-on-error`, a step's `timeout-minutes`, and
-`${{ }}` expressions), lists the `uses:` steps it skips, caps the container at
+steps. A step whose `if` has `always()` runs after a failure; the job's
+`timeout-minutes` bounds the run. A `strategy.matrix` job runs once per
+combination, each on a fresh export and container, with `${{ matrix.X }}`
+substituted and each step's `if` evaluated for it (matrix values, literals,
+`==`, `!=`, `!`, `&&`, `||`, `always()`, `success()`). Every combination runs
+even after one fails, and the gate fails if any did; `GATE_MATRIX=check=eunit`
+runs one, and `GATE_DRY_RUN=1` prints each combination's plan and runs
+nothing. It refuses what it cannot reproduce (an `if` on a run step reading
+anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;
+`shell`, `continue-on-error`, a step's `timeout-minutes`; and any other
+`${{ }}` expression), lists the `uses:` steps it skips, caps the container at
 `GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 

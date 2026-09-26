@@ -297,4 +297,144 @@ for v in / "$HOME" "$HOME/" "$HOME/." //; do
     grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite GATE_LOG_DIR='$v': $OUT"
 done
 
+# A repository whose .github/workflows/lint.yml is exactly $2.
+wf() {
+    local dir="$WORK/$1"
+    mkdir -p "$dir/.github/workflows"
+    printf '%s\n' "$2" > "$dir/.github/workflows/lint.yml"
+    git -C "$dir" init -q -b main
+    git -C "$dir" add -A
+    git -C "$dir" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm t
+    git -C "$dir" rev-parse HEAD
+}
+
+# 21. macula's real test.yml (origin/main 0e2724cc, scripts/fixtures/): a
+#     matrix over `check', each check a step gated `if: matrix.check == ...',
+#     and a `uses:' step gated on failure(). The dry run plans one job per
+#     combination, in the matrix's order, each with only its own check, and
+#     skips the uses: step instead of refusing its if:.
+mkdir -p "$WORK/macula/.github/workflows"
+cp "$HERE/fixtures/macula-test.yml" "$WORK/macula/.github/workflows/test.yml"
+git -C "$WORK/macula" init -q -b main && git -C "$WORK/macula" add -A
+git -C "$WORK/macula" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm t
+MSHA=$(git -C "$WORK/macula" rev-parse HEAD)
+OUT=$(GATE_DRY_RUN=1 "$GATE" "$WORK/macula" "$MSHA" test.yml test 2>&1) || fail "the macula matrix job was refused: $OUT"
+[ "$(grep -c '^matrix: ' <<<"$OUT")" -eq 4 ] || fail "the macula matrix did not plan 4 combinations: $OUT"
+[ "$(grep '^matrix: ' <<<"$OUT" | tr '\n' ' ')" = "matrix: check=eunit matrix: check=ct matrix: check=xref matrix: check=dialyzer " ] \
+    || fail "the combinations were not in the matrix's order: $OUT"
+plan() { sed -n "/^matrix: check=$1\$/,/^matrix: /p" <<<"$OUT"; }
+grep -qx "  run: eunit" <<<"$(plan eunit)" || fail "the eunit combination does not run eunit: $(plan eunit)"
+grep -q "  run: common_test" <<<"$(plan eunit)" && fail "the eunit combination runs common_test: $(plan eunit)"
+grep -qx "  run: common_test" <<<"$(plan ct)" || fail "the ct combination does not run common_test: $(plan ct)"
+grep -qx "  run: Compile, which builds the NIFs" <<<"$(plan xref)" || fail "a combination lost the shared compile step: $(plan xref)"
+grep -qx "  not run: dialyzer" <<<"$(plan xref)" || fail "a step whose if is false was not reported as not run: $(plan xref)"
+grep -q "skipped: uses: actions/upload-artifact@v4" <<<"$(plan ct)" || fail "the failure()-gated uses: step was not skipped: $(plan ct)"
+grep -q '^>>> ' <<<"$OUT" && fail "a dry run ran a step: $OUT"
+grep -qx "matrix check=eunit: planned" <<<"$OUT" || fail "a dry run's summary did not say planned: $OUT"
+grep -q ": passed$" <<<"$OUT" && fail "a dry run reported a combination as passed: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a dry run left its workspace behind"
+
+# 22. GATE_MATRIX selects one combination; the throttle's test steps are
+#     per combination, and a combination without one is noted, not refused.
+OUT=$(GATE_DRY_RUN=1 GATE_MATRIX=check=ct GATE_TEST_CPUS=runner "$GATE" "$WORK/macula" "$MSHA" test.yml test 2>&1) \
+    || fail "GATE_MATRIX=check=ct was refused: $OUT"
+[ "$(grep '^matrix: ' <<<"$OUT")" = "matrix: check=ct" ] || fail "GATE_MATRIX did not select only check=ct: $OUT"
+grep -qx "  test steps: common_test" <<<"$OUT" || fail "the ct combination's test step was not named: $OUT"
+OUT=$(GATE_DRY_RUN=1 GATE_TEST_CPUS=runner "$GATE" "$WORK/macula" "$MSHA" test.yml test 2>&1) \
+    || fail "a throttled dry run of the whole matrix was refused: $OUT"
+grep -qx "  test steps: none in this combination; no throttled pass" <<<"$(plan xref)" \
+    || fail "a combination without a test step was not noted: $(plan xref)"
+
+# 23. A matrix job runs every combination, each on its own fresh export, with
+#     ${{ matrix.* }} substituted and each step's if evaluated; the gate
+#     reports each and fails if any failed.
+# shellcheck disable=SC2016 # GitHub expressions and container-side variables, on purpose
+SHA=$(wf matrix 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        k: [a, b]
+    steps:
+      - run: echo "k=${{ matrix.k }} fresh=$(ls /w/marker 2>/dev/null | wc -l)" && touch /w/marker
+      - name: only-a
+        if: ${{ !(matrix.k == '"'B'"') }}
+        run: echo only-a-ran
+      - name: fails-on-b
+        if: ${{ matrix.k != '"'a'"' && true }}
+        run: "false"
+      - name: after
+        if: always() && (matrix.k == '"'b'"' || matrix.k == '"'z'"')
+        run: echo always-b-ran')
+OUT=$("$GATE" "$WORK/matrix" "$SHA" 2>&1) && fail "a matrix with a failing combination exited 0: $OUT"
+grep -qx "k=a fresh=0" <<<"$OUT" || fail "combination a did not run on a fresh export with matrix.k substituted: $OUT"
+grep -qx "k=b fresh=0" <<<"$OUT" || fail "combination b did not run on a fresh export: $OUT"
+[ "$(grep -cx "only-a-ran" <<<"$OUT")" -eq 1 ] || fail "an if: !(matrix.k == 'B') step did not run exactly once (case-insensitive, as GitHub compares): $OUT"
+[ "$(grep -cx "always-b-ran" <<<"$OUT")" -eq 1 ] || fail "an always() && matrix step did not run once, after b failed: $OUT"
+grep -qx "matrix k=a: passed" <<<"$OUT" || fail "combination a was not reported as passed: $OUT"
+grep -qx "matrix k=b: FAILED (exit 1)" <<<"$OUT" || fail "combination b was not reported as failed: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a matrix run left its workspace behind"
+OUT=$(GATE_MATRIX=k=a "$GATE" "$WORK/matrix" "$SHA" 2>&1) || fail "GATE_MATRIX=k=a failed: $OUT"
+grep -q "k=b" <<<"$OUT" && fail "GATE_MATRIX=k=a ran combination b: $OUT"
+
+# 24. What the gate cannot evaluate or select is refused before anything runs,
+#     by name: an unknown or partial GATE_MATRIX, GATE_MATRIX on a job without
+#     a matrix, include/exclude, an if on a run step that reads anything but
+#     matrix values and always()/success(), and a ${{ }} other than matrix.*.
+for v in k=c z=a k "" "k=a,k=b"; do
+    OUT=$(GATE_MATRIX="$v" "$GATE" "$WORK/matrix" "$SHA" 2>&1) && fail "GATE_MATRIX='$v' was accepted: $OUT"
+    grep -q "REFUSED: GATE_MATRIX='$v'" <<<"$OUT" || fail "the refusal did not name GATE_MATRIX='$v': $OUT"
+    grep -q "^k=" <<<"$OUT" && fail "a step ran despite GATE_MATRIX='$v': $OUT"
+done
+OUT=$(GATE_MATRIX=k=a "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) && fail "GATE_MATRIX on a job without a matrix was accepted: $OUT"
+grep -q "REFUSED: GATE_MATRIX='k=a' but job 'check' has no matrix" <<<"$OUT" || fail "the no-matrix refusal was not named: $OUT"
+for bad in "include: [{k: c}]" "exclude: [{k: a}]"; do
+    SHA=$(wf "incl-${bad%%:*}" 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        k: [a, b]
+        '"$bad"'
+    steps:
+      - run: echo should-not-run')
+    OUT=$("$GATE" "$WORK/incl-${bad%%:*}" "$SHA" 2>&1) && fail "a matrix with ${bad%%:*} was accepted: $OUT"
+    grep -q "REFUSED: .*matrix ${bad%%:*}" <<<"$OUT" || fail "the ${bad%%:*} refusal was not named: $OUT"
+done
+for cond in "steps.x.outcome == 'failure'" "failure() && matrix.k == 'a'" "matrix.nope == 'a'" "contains(matrix.k, 'a')"; do
+    SHA=$(wf badif 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        k: [a]
+    steps:
+      - run: echo should-not-run
+        if: '"\"$cond\""'')
+    OUT=$("$GATE" "$WORK/badif" "$SHA" 2>&1) && fail "if: $cond on a run step was accepted: $OUT"
+    grep -qF "if: $cond" <<<"$OUT" || fail "the refusal did not name if: $cond: $OUT"
+    grep -qx "should-not-run" <<<"$OUT" && fail "a step ran despite if: $cond: $OUT"
+    rm -rf "$WORK/badif"
+done
+# shellcheck disable=SC2016 # a literal GitHub expression, on purpose
+SHA=$(wf otherexpr 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        k: [a]
+    steps:
+      - run: echo "${{ matrix.k }} ${{ runner.os }}"')
+OUT=$("$GATE" "$WORK/otherexpr" "$SHA" 2>&1) && fail "a non-matrix expression was accepted: $OUT"
+grep -q "runner.os" <<<"$OUT" || fail "the refusal did not name the non-matrix expression: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a refused matrix left its workspace behind"
+
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

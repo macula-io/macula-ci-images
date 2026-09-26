@@ -1,0 +1,250 @@
+name: Test
+
+# Runs the suite on every push and pull request: eunit, common_test, xref and
+# dialyzer.
+#
+# publish-hex.yml opens by saying "Tests gate the release commit on main, not
+# the publish". Until this workflow existed nothing ran the suite on a change,
+# so that sentence described an intention rather than a fact. This makes it
+# true for the first half. It deliberately does NOT gate the publish: that is
+# a separate decision, and 11.x is mid-flight.
+#
+# A red run here is information, not an inconvenience. Nothing in this file
+# may be weakened to produce a green: no continue-on-error, no suite dropped,
+# no failure matched away. If the suite finds something, the suite found
+# something.
+
+on:
+  push:
+    # Branches only. Without this, `push` matches TAG refs too, and every
+    # release tag ran a second full job on a tree that had just gone green
+    # on main minutes earlier.
+    #
+    # The trade, since it is arguable: that duplicate WAS a check of the
+    # exact tagged commit, and publish-hex.yml's own verify job does not run
+    # the suite, only the package build, the NIF load and a publish dry run.
+    # So a tag no longer has the suite run against it directly. What it has
+    # instead is the guarantee that the tag points at a commit on main that
+    # did, which is what a release tag is for. Restore tag matching here if
+    # that stops being true.
+    branches: ['**']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'LICENSE'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'plans/**'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+env:
+  # Must equal the erlang pin in .tool-versions AND the OTP the container
+  # ships. scripts/is_erlang_the_pinned_version.sh asserts the second against
+  # the first below rather than assuming it; this copy exists to key the PLT
+  # cache.
+  OTP_VERSION: '28.4.3'
+  # The tools the build image (container: below) must carry, asserted by
+  # scripts/is_ci_image_the_pinned_one.sh before anything builds. They name
+  # what the pinned image digest already contains; move them together with it.
+  # Rust comes from the image (CARGO_HOME=/usr/local/cargo, RUSTUP_HOME=
+  # /usr/local/rustup, baked in); this job installs none of its own.
+  CI_REBAR3_VERSION: '3.27.0'
+  CI_RUST_VERSION: '1.98.1'
+
+concurrency:
+  # On a BRANCH a newer push should cancel the older run: nobody is waiting on
+  # the answer for a commit that has been superseded.
+  #
+  # On MAIN it must not, and this used to. During a busy stretch every run on
+  # main was cancelled by the next push, so no run on main completed and there
+  # was NO COMMIT ON MAIN WE COULD CALL GREEN, which is the one thing
+  # trunk-based development rests on. Observed: two consecutive runs on main
+  # cancelled at 4.9 and 7.6 minutes.
+  #
+  # Keying the group on the sha for main gives every commit there its own
+  # group, so nothing cancels it and every commit on main gets an answer.
+  # Branch behaviour is unchanged.
+  group: test-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'ref' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.check }}
+
+    # The four checks used to run one after another in a single job, so the
+    # wall clock was their sum and eunit (by far the longest) delayed the
+    # three short ones. They share every setup step above, so a matrix runs
+    # them in parallel without duplicating the container, the toolchain or
+    # the caches.
+    #
+    # fail-fast is OFF deliberately: the serial job reported every check's
+    # result, and cancelling the others on the first red would report less
+    # than it used to.
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [eunit, ct, xref, dialyzer]
+    # A GitHub-hosted public runner, deliberately. macula is a public
+    # repository and this costs nothing there. Do NOT put `self-hosted` here:
+    # the Default runner group is closed to public repositories on purpose,
+    # and a self-hosted runner reachable from a public repo would let a fork's
+    # pull request run arbitrary code on a machine holding real credentials.
+    # That property is load-bearing.
+    runs-on: ubuntu-latest
+
+    # WHY A CONTAINER, since a job in one on a public runner looks like
+    # something to simplify away: a STOCK GitHub runner's libcrypto has NO
+    # ML-DSA. The first run of this workflow died 180 times on
+    # `crypto:generate_key(mldsa87, [])` with
+    # `{badarg,{"evp.c",259},"Bad key type"}`, taking out every test that
+    # needs a node identity, which for a post-quantum SDK is most of them.
+    # ML-DSA arrived in OpenSSL 3.5. This image carries OpenSSL 3.5.7 and
+    # OTP 28.4.3, and generating an ML-DSA-87 key in it was measured rather
+    # than read off a supports list. The runner underneath is still an
+    # ordinary public one, so nothing about the security property above
+    # changes; the cost is an image pull.
+    #
+    # The image also supplies rebar3 and Rust, pinned exactly, so this job
+    # runs neither erlef/setup-beam nor rustup. Installing another OTP over
+    # the image's would link crypto against a different libcrypto and could
+    # quietly put back the exact failure the container is here to fix.
+    #
+    # ⚠ PINNED BY DATED TAG AND DIGEST, never :latest. With :latest, any
+    # rebuild of the image changed the toolchain this repo builds with, with
+    # no commit here. A new toolchain now arrives only as a commit to this
+    # line, together with CI_REBAR3_VERSION / CI_RUST_VERSION above.
+    container: ghcr.io/macula-io/macula-ci-otp:20260923-1352@sha256:aff1d39bc4aa29d13044b90b38e9b7f4b757d50818cc11c5bb7e84cdbf82ac70
+
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@v4
+
+      # Every NIF crate builds from source (priv/build-nifs.sh, run by
+      # rebar.config's compile pre_hook), and macula_cbor_nif has no prebuilt
+      # artifact at all, so a toolchain-less run does not fall back, it fails.
+      # Worse, a build that silently lacks NIFs runs the pure-Erlang crypto
+      # path, which reads as unrelated test failures rather than as a missing
+      # toolchain.
+      #
+      # The Rust they build with is the image's, pinned. This step installed
+      # rustup's `stable' at job time, back when the image carried no Rust,
+      # so the compiler floated even with the image pinned. The image has
+      # shipped Rust since macula-ci-images 0c9ec10, and macula-station's CI
+      # builds every NIF crate from source with it, through the same
+      # pre_hook, with nothing installed at job time.
+      - name: Check the CI image and its toolchain are the pinned ones
+        run: bash scripts/is_ci_image_the_pinned_one.sh .github/workflows/test.yml
+
+      # The download cache only. Deliberately NOT native/*/target and
+      # NOT priv/*.so: build-nifs.sh skips a crate whose .so is newer than
+      # its sources, so a restored binary can outrank the tree it is supposed
+      # to have been built from. That trap has already shipped a NIF that
+      # did not match its source once.
+      - name: Cache the cargo download registry
+        uses: actions/cache@v4
+        with:
+          # /usr/local/cargo, the image's baked-in CARGO_HOME: a cache path is
+          # a claim about where the tool writes.
+          path: |
+            /usr/local/cargo/registry
+            /usr/local/cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('native/*/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # rebar.config sets plt_location local and base_plt_location global, so
+      # the PLT lands in both places. Without this every run pays the full
+      # PLT build, not just the first.
+      #
+      # The global one goes under $HOME, and a container job sets
+      # HOME=/github/home rather than root's /root. Caching /root/.cache
+      # matched nothing. The local PLT under _build covers the common case
+      # on its own, so this only bites on a cache miss, when rebar.config or
+      # rebar.lock changes the key.
+      - name: Cache the dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: |
+            _build/default/*_plt
+            _build/default/*_plt.hash
+            /github/home/.cache/rebar3
+          key: plt-${{ runner.os }}-otp${{ env.OTP_VERSION }}-${{ hashFiles('rebar.config', 'rebar.lock') }}
+          restore-keys: plt-${{ runner.os }}-otp${{ env.OTP_VERSION }}-
+
+      # Asserts the OTP the container actually ships against .tool-versions,
+      # so the image and the pin cannot drift apart unnoticed.
+      - name: Check the Erlang on PATH is the pinned one
+        run: bash scripts/is_erlang_the_pinned_version.sh
+
+      # WHAT THIS IS FOR, because it looks redundant next to the suite that
+      # follows: it asserts the reason this job runs in a container at all,
+      # before the suite rather than 180 failures into it.
+      #
+      # This check exists because we learned the hard way. The first run of
+      # this workflow produced 180 failures across 53 test modules, all of
+      # them reading as unrelated test breakage, and the real cause was one
+      # missing algorithm in the runner's libcrypto. Diagnosing that took an
+      # evening. A libcrypto without ML-DSA now fails HERE instead, in one
+      # line that names the cause, before a single test runs.
+      #
+      # If you are tidying this workflow: deleting this step does not make
+      # the suite any greener, it only makes the next libcrypto change cost
+      # what this one cost.
+      - name: Check this Erlang can do ML-DSA-87
+        run: |
+          erl -noshell -eval '
+            {Pub, _Priv} = crypto:generate_key(mldsa87, []),
+            io:format("ML-DSA-87 ok, public key ~p bytes, on ~p~n",
+                      [byte_size(Pub), crypto:info_lib()]),
+            halt().'
+
+      - name: Compile, which builds the NIFs
+        run: rebar3 compile 2>&1 | tee build.log
+
+      # Asserts the shape of success rather than the absence of an error: the
+      # QUIC NIF must actually load from what this build produced. A build
+      # whose NIFs are missing otherwise reaches eunit and fails there, in
+      # tests that have nothing to do with the cause.
+      - name: Check the QUIC NIF loads from this build
+        run: bash scripts/is_quic_nif_built_from_this_tree.sh _build/default/lib build.log
+
+      # Known to be flaky under load. If this goes red intermittently, that is
+      # reported as "flaky, N of M runs", not silenced here.
+      - name: eunit
+        if: matrix.check == 'eunit'
+        run: rebar3 eunit
+
+      # The fleet suites in test/overlay: realm-gated HyParView admission and
+      # Plumtree gossip, across in-VM stations, over the frame codec. Until
+      # this step nothing ran common_test, and both suites failed from 11.x on
+      # without anyone seeing it. Every suite under test/ runs here; one that
+      # needs something CI does not have belongs outside test/, not skipped.
+      - name: common_test
+        id: common_test
+        if: matrix.check == 'ct'
+        run: rebar3 ct
+
+      # A failed common_test run leaves its reasons in HTML logs, not on the
+      # console, so they are kept for a week.
+      - name: Keep the common_test logs of a failed run
+        if: failure() && matrix.check == 'ct' && steps.common_test.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: common-test-logs
+          path: _build/test/logs
+          retention-days: 7
+
+      - name: xref
+        if: matrix.check == 'xref'
+        run: rebar3 xref
+
+      - name: dialyzer
+        if: matrix.check == 'dialyzer'
+        run: rebar3 dialyzer

@@ -16,12 +16,25 @@
 # reaches the steps after it.
 #
 # What it cannot reproduce it refuses rather than approximates: a step using
-# `shell', `continue-on-error' or `timeout-minutes', an `if' other than
-# `always()', or a `${{ }}' expression in the image or a run step, stops the
-# run before anything starts, naming what it found. `uses:' steps are skipped
-# and listed: the export replaces actions/checkout, and a cache only makes CI
-# faster. An `if: always()' step runs after the others even when one failed,
-# as in CI, and the job's `timeout-minutes' bounds the whole run.
+# `shell', `continue-on-error' or `timeout-minutes', a run step's `if' that
+# reads anything but matrix values, literals, always() and success(), or a
+# `${{ }}' expression other than `${{ matrix.X }}' in the image, env or a run
+# step, stops the run before anything starts, naming what it found. `uses:'
+# steps are skipped and listed, their `if' unevaluated: the export replaces
+# actions/checkout, and a cache or an artifact upload only serves CI. An `if'
+# with always() runs after the others even when one failed, as in CI, and the
+# job's `timeout-minutes' bounds the whole run.
+#
+# A `strategy.matrix' job (plain axes; include/exclude and a computed matrix
+# are refused) runs once per combination, in the matrix's order, each on its
+# own fresh export and container, as CI runs each as its own job, with
+# `${{ matrix.X }}' substituted and each step's `if' evaluated for it. Every
+# combination runs even after one fails (CI's fail-fast would cancel the
+# rest and hide a second failure), one line per combination is printed, and
+# the gate fails if any did. GATE_MATRIX='check=eunit' (one value per axis,
+# comma-separated) runs only that one. Every combination is checked before
+# any runs. GATE_DRY_RUN=1 prints what each combination would run and runs
+# nothing.
 #
 # /tmp on host00 is a SHARED tmpfs (RAM). The export and the job's _build live
 # in a temporary directory under TMPDIR, and an exit trap removes it whether
@@ -60,6 +73,8 @@
 #   e.g. scripts/ci_gate.sh ~/work/github.com/macula-services/mcl-om a340c1e lint-and-test.yml
 #   GATE_CPUS=4 GATE_MEMORY=8g ENGINE=podman GATE_TEST_CPUS=runner|0.5
 #   GATE_LOG_DIR=~/.cache/ci-gate GATE_LOG_KEEP=20
+#   GATE_MATRIX=check=eunit GATE_DRY_RUN=1
+#   e.g. GATE_TEST_CPUS=runner scripts/ci_gate.sh ~/work/github.com/macula-io/macula <sha> test.yml test
 set -euo pipefail
 
 # THE BODY IS ONE FUNCTION, CALLED ON THE LAST LINE AS `{ main "$@"; exit; }':
@@ -103,6 +118,11 @@ if [ -n "${GATE_TEST_CPUS+set}" ]; then
     fi
 fi
 
+if [ -n "${GATE_DRY_RUN+set}" ] && [ "$GATE_DRY_RUN" != 1 ]; then
+    echo "REFUSED: GATE_DRY_RUN='$GATE_DRY_RUN'; set it to 1 or leave it unset"
+    exit 2
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gate.XXXXXX")"
 NAME="ci-gate-$(basename "$WORK" | tr -cd 'A-Za-z0-9')"
 # The container writes the job's _build into the export as root; under
@@ -135,7 +155,7 @@ if not image:
     sys.exit(f"REFUSED: job {job_name!r} has no container image; it runs on the runner's own "
              "toolchain (e.g. setup-beam on ubuntu-latest), which this gate cannot reproduce")
 
-import re
+import re, os, copy, itertools
 
 def label_of(step):
     return step.get("name", step.get("run", step.get("uses")))
@@ -143,21 +163,155 @@ def label_of(step):
 unsupported = {"shell", "continue-on-error", "timeout-minutes"}
 for step in job["steps"]:
     bad = sorted(unsupported & set(step))
-    if "if" in step and str(step["if"]).strip() != "always()":
-        bad.append(f"if: {step['if']}")
     if bad:
         sys.exit(f"REFUSED: step {label_of(step)!r} uses {', '.join(bad)}, "
                  f"which this gate cannot reproduce")
 
-# A ${{ }} expression is evaluated by the runner before the shell sees it; the
-# gate cannot, and bash would get the literal text.
+# The matrix: plain axes only, each a list of scalars. A combination is one
+# value per axis; the gate runs each on its own fresh export, as CI runs each
+# as its own job. include/exclude and a computed matrix are refused.
+def sv(v):
+    return {True: "true", False: "false"}.get(v, str(v)) if isinstance(v, bool) else str(v)
+
+strategy = job.get("strategy") or {}
+matrix = strategy.get("matrix")
+axes = {}
+if matrix is not None:
+    if not isinstance(matrix, dict):
+        sys.exit(f"REFUSED: job {job_name!r} has a computed matrix {matrix!r}, which this gate cannot reproduce")
+    for key, values in matrix.items():
+        if key in ("include", "exclude"):
+            sys.exit(f"REFUSED: job {job_name!r} uses matrix {key}, which this gate cannot reproduce")
+        if not isinstance(values, list) or not values \
+           or not all(isinstance(v, (str, int, float, bool)) for v in values):
+            sys.exit(f"REFUSED: matrix axis {key!r} of job {job_name!r} is not a list of plain values: {values!r}")
+        if any("," in sv(v) or "=" in sv(v) for v in values):
+            sys.exit(f"REFUSED: matrix axis {key!r} has a value with ',' or '=': {values!r}")
+        axes[key] = [sv(v) for v in values]
+combos = [dict(zip(axes, vs)) for vs in itertools.product(*axes.values())] if axes else [{}]
+
+def combo_str(c):
+    return ",".join(f"{k}={v}" for k, v in c.items())
+
+requested = os.environ.get("GATE_MATRIX")
+child = os.environ.get("GATE_MATRIX_CHILD") == "1"
+dry = os.environ.get("GATE_DRY_RUN") == "1"
+selected = None
+if requested is not None:
+    if not axes:
+        sys.exit(f"REFUSED: GATE_MATRIX={requested!r} but job {job_name!r} has no matrix")
+    pairs = [p.split("=", 1) for p in requested.split(",")] if requested else [[""]]
+    keys = [p[0] for p in pairs]
+    valid = ", ".join(combo_str(c) for c in combos)
+    if any(len(p) != 2 for p in pairs) or len(set(keys)) != len(keys) or set(keys) != set(axes):
+        sys.exit(f"REFUSED: GATE_MATRIX={requested!r} is not one value for each of {', '.join(axes)} "
+                 f"(the combinations: {valid})")
+    selected = {k: dict(pairs)[k] for k in axes}
+    if selected not in combos:
+        sys.exit(f"REFUSED: GATE_MATRIX={requested!r} is not a combination of this matrix (they are: {valid})")
+
+# A step's `if', for one combination. What it may read: matrix values, string
+# and number literals, true/false, always() and success(), joined by ==, !=,
+# !, &&, || and parentheses. Strings compare case-insensitively, as GitHub
+# compares them. Anything else (failure(), steps.*, github.*, functions) is
+# refused by name on a run step. A uses: step is skipped, so its if is not
+# evaluated at all.
+TOKEN = re.compile(r"\s*(?:(\(|\)|&&|\|\||!=|==|!)|(always\(\)|success\(\))|(true|false)\b"
+                   r"|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)\b|matrix\.([A-Za-z_][A-Za-z0-9_-]*))")
+OPS = {"(": "(", ")": ")", "&&": " and ", "||": " or ", "!=": "!=", "==": "==", "!": " not "}
+
+def evaluate(step, combo):
+    text = str(step["if"]).strip()
+    whole = re.fullmatch(r"\$\{\{(.*)\}\}", text, re.S)
+    body, pos, out, status = (whole.group(1) if whole else text), 0, [], False
+    refuse = f"REFUSED: step {label_of(step)!r} uses if: {step['if']}, which this gate cannot reproduce"
+    body = body.strip()
+    while pos < len(body):
+        m = TOKEN.match(body, pos)
+        if not m or m.end() == pos:
+            sys.exit(refuse)
+        op, fn, lit, string, num, key = m.groups()
+        if op:
+            out.append(OPS[op])
+        elif fn:
+            status = status or fn == "always()"
+            out.append("True")
+        elif lit:
+            out.append(lit.capitalize())
+        elif string is not None:
+            out.append(repr(string.replace("''", "'").lower()))
+        elif num:
+            out.append(repr(num))
+        else:
+            if key not in combo:
+                sys.exit(refuse)
+            out.append(repr(combo[key].lower()))
+        pos = m.end()
+    try:
+        return bool(eval("".join(out), {"__builtins__": {}}, {})), status
+    except Exception:
+        sys.exit(refuse)
+
+# ${{ matrix.X }} is substituted for the combination; any other ${{ }} is
+# evaluated by the runner before the shell sees it, which the gate cannot do,
+# and bash would get the literal text.
+MATRIX_EXPR = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 EXPR = re.compile(r"\$\{\{[^}]*\}\}")
-found = (EXPR.findall(str(image))
-         + [e for s in job["steps"] for e in EXPR.findall(s.get("run", ""))]
-         + [e for env in [spec.get("env"), job.get("env")] + [s.get("env") for s in job["steps"]]
-            for v in (env or {}).values() for e in EXPR.findall(str(v))])
-if found:
-    sys.exit(f"REFUSED: GitHub expressions this gate cannot evaluate: {', '.join(sorted(set(found)))}")
+
+def substitute(value, combo):
+    return MATRIX_EXPR.sub(lambda m: combo.get(m.group(1), m.group(0)), str(value))
+
+TEST = re.compile(r"\brebar3\b[^\n|;&]*\b(eunit|ct)\b|\bmix\s+test\b|\bcargo\s+(test|nextest)\b"
+                  r"|\bgo\s+test\b|\bgleam\s+test\b|\bpytest\b")
+
+def plan_for(combo):
+    steps = copy.deepcopy(job["steps"])
+    envs = [copy.deepcopy(spec.get("env") or {}), copy.deepcopy(job.get("env") or {})]
+    img = substitute(image, combo)
+    for env in envs + [s.setdefault("env", {}) for s in steps if "run" in s]:
+        for k in env:
+            env[k] = substitute(env[k], combo)
+    for s in steps:
+        for k in ("run", "working-directory"):
+            if k in s:
+                s[k] = substitute(s[k], combo)
+    found = (EXPR.findall(img) + [e for s in steps for e in EXPR.findall(s.get("run", ""))]
+             + [e for env in envs + [s.get("env") or {} for s in steps] for v in env.values()
+                for e in EXPR.findall(str(v))])
+    if found:
+        sys.exit(f"REFUSED: GitHub expressions this gate cannot evaluate: {', '.join(sorted(set(found)))}")
+    plan = {"image": img, "env": envs, "plain": [], "always": [], "not_run": [], "uses": [], "order": []}
+    for s in steps:
+        if "uses" in s:
+            plan["uses"].append(s)
+            continue
+        runs, always_ = evaluate(s, combo) if "if" in s else (True, False)
+        kind = "not_run" if not runs else "always" if always_ else "plain"
+        plan[kind].append(s)
+        plan["order"].append((kind, s))
+    plan["tests"] = [s for s in plan["plain"] if TEST.search(s["run"])]
+    return plan
+
+# Every combination is checked before any runs, so a matrix the gate cannot
+# reproduce is refused whole, before anything starts.
+plans = {combo_str(c): plan_for(c) for c in combos}
+
+if axes and selected is None:
+    if test_cpus and not any(p["tests"] for p in plans.values()):
+        sys.exit(f"REFUSED: GATE_TEST_CPUS is set but no combination of job {job_name!r} has a test step")
+    open(f"{work}/fanout", "w").write("".join(f"{c}\n" for c in plans))
+    sys.exit(0)
+
+plan = plans[combo_str(selected or {})]
+image = plan["image"]
+if axes:
+    print(f"matrix: {combo_str(selected)}")
+for step in plan["uses"]:
+    print(f"skipped: uses: {step['uses']}")
+if dry:
+    words = {"plain": "run", "always": "always", "not_run": "not run"}
+    for kind, step in plan["order"]:
+        print(f"  {words[kind]}: {label_of(step)}")
 
 def exports(env):
     return "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in (env or {}).items())
@@ -181,11 +335,8 @@ def write_step(f, step):
             'done < "$GITHUB_ENV"\n'
             ': > "$GITHUB_ENV"\n')
 
-for step in job["steps"]:
-    if "uses" in step:
-        print(f"skipped: uses: {step['uses']}")
-plain = [s for s in job["steps"] if "run" in s and "if" not in s]
-always = [s for s in job["steps"] if "run" in s and "if" in s]
+plain = plan["plain"]
+always = plan["always"]
 
 # The plain steps stop at the first failure; the always() steps run after
 # them regardless, each on its own; the job fails if any of them failed.
@@ -193,7 +344,6 @@ always = [s for s in job["steps"] if "run" in s and "if" in s]
 # Each phase is its own bash process. `set -e' is ignored inside a compound
 # command whose status is tested (`( ... ) || status=$?'), so a subshell would
 # carry on past a failing step; a separate process keeps its own errexit.
-import os
 os.makedirs(f"{work}/gate")
 
 # Env as CI layers it: the runner's own variables a step may read, then the
@@ -213,8 +363,8 @@ def phase(path, steps, replay=False):
                     'while IFS= read -r kv; do case "$kv" in *=*) export "${kv%%=*}=${kv#*=}";; esac; '
                     'done < "$GITHUB_ENV"\n'
                     ': > "$GITHUB_ENV"\n')
-        f.write(exports(spec.get("env")))
-        f.write(exports(job.get("env")))
+        f.write(exports(plan["env"][0]))
+        f.write(exports(plan["env"][1]))
         for step in steps:
             write_step(f, step)
 
@@ -231,22 +381,55 @@ with open(f"{work}/gate/job.sh", "w") as f:
             'done\nexit "$status"\n')
 
 # The throttled pass: the plain steps that run a test suite, and nothing else.
-TEST = re.compile(r"\brebar3\b[^\n|;&]*\b(eunit|ct)\b|\bmix\s+test\b|\bcargo\s+(test|nextest)\b"
-                  r"|\bgo\s+test\b|\bgleam\s+test\b|\bpytest\b")
+# A combination the gate fanned out that has none is noted and skipped; the
+# fan-out already refused a matrix where no combination has one.
 if test_cpus:
-    tests = [s for s in plain if TEST.search(s["run"])]
-    if not tests:
+    tests = plan["tests"]
+    if tests:
+        phase(f"{work}/gate/test.sh", tests, replay=True)
+        if dry:
+            print(f"  test steps: {', '.join(label_of(s) for s in tests)}")
+    elif child:
+        print("  test steps: none in this combination; no throttled pass")
+    else:
         sys.exit(f"REFUSED: GATE_TEST_CPUS is set but job {job_name!r} has no test step "
                  f"(its run steps: {', '.join(repr(label_of(s)) for s in plain) or 'none'})")
-    phase(f"{work}/gate/test.sh", tests, replay=True)
 
 open(f"{work}/image", "w").write(image)
 open(f"{work}/timeout", "w").write(str(job.get("timeout-minutes", "")))
 PY
 
+# A matrix job with no GATE_MATRIX: every combination, each a gate run of its
+# own (fresh export, fresh container), then one line per combination. The gate
+# fails if any combination failed, as the workflow does; unlike CI's default
+# fail-fast, every combination runs, so one failure does not hide another.
+if [ -e "$WORK/fanout" ]; then
+    local status=0 results=() c s
+    while IFS= read -r c; do
+        set +e
+        GATE_MATRIX="$c" GATE_MATRIX_CHILD=1 bash "${BASH_SOURCE[0]}" "$@"
+        s=$?
+        set -e
+        if [ "$s" -eq 0 ] && [ "${GATE_DRY_RUN:-}" = 1 ]; then
+            results+=("matrix ${c}: planned")
+        elif [ "$s" -eq 0 ]; then
+            results+=("matrix ${c}: passed")
+        else
+            results+=("matrix ${c}: FAILED (exit $s)")
+            [ "$status" -ne 0 ] || status=$s
+        fi
+    done < "$WORK/fanout"
+    printf '%s\n' "${results[@]}"
+    exit "$status"
+fi
+
 IMAGE="$(cat "$WORK/image")"
 MINUTES="$(cat "$WORK/timeout")"
 echo "image: $IMAGE"
+if [ "${GATE_DRY_RUN:-}" = 1 ]; then
+    echo "dry run: nothing ran"
+    exit 0
+fi
 # The job's timeout-minutes bounds the whole run, as in CI. Without one, none.
 LIMIT=()
 SECONDS_ALLOWED=""
@@ -282,7 +465,7 @@ run_pass "the job" "$ENGINE" run --init --name "$NAME" --user 0 --cpus="$CPUS" -
     -e MAKEFLAGS=-j"$CPUS" -e CMAKE_BUILD_PARALLEL_LEVEL="$CPUS" -e CARGO_BUILD_JOBS="$CPUS" \
     -v "$WORK/src:/w:Z" -v "$WORK/gate:/gate:ro,Z" -v "$WORK/carry:/carry:Z" \
     "$IMAGE" bash /gate/entry.sh
-if [ "$STATUS" -eq 0 ] && [ -n "$TEST_CPUS" ]; then
+if [ "$STATUS" -eq 0 ] && [ -n "$TEST_CPUS" ] && [ -e "$WORK/gate/test.sh" ]; then
     echo ">>> throttled test pass: the test steps again under --cpus=$TEST_CPUS" | tee -a "$WORK/job.log"
     touch "$WORK/carry/throttled"
     "$ENGINE" update --cpus="$TEST_CPUS" "$NAME" >/dev/null
@@ -300,7 +483,9 @@ fi
 # it is not bottomless either. Runs live in LOG_DIR/runs, and the prune
 # touches only names of the shape written here: GATE_LOG_DIR may be shared.
 if [ "$STATUS" -ne 0 ]; then
-    KEEP="$RUNS/$(basename "$REPO")-$(git -C "$REPO" rev-parse "$SHA^{commit}" | head -c 12)-$(date -u +%Y%m%dT%H%M%SZ)"
+    # A combination is part of the name, so two combinations of one commit
+    # failing in the same second keep two runs, not one.
+    KEEP="$RUNS/$(basename "$REPO")${GATE_MATRIX:+.$(tr -c 'A-Za-z0-9._=,-' _ <<<"$GATE_MATRIX" | head -c -1)}-$(git -C "$REPO" rev-parse "$SHA^{commit}" | head -c 12)-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$KEEP"
     sed 's/\x1b\[[0-9;]*m//g' "$WORK/job.log" > "$KEEP/job.log"
     if [ -d "$WORK/src/_build/test/logs" ]; then
