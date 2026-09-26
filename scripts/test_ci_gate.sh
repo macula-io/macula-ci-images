@@ -435,6 +435,65 @@ SHA=$(wf otherexpr 'jobs:
       - run: echo "${{ matrix.k }} ${{ runner.os }}"')
 OUT=$("$GATE" "$WORK/otherexpr" "$SHA" 2>&1) && fail "a non-matrix expression was accepted: $OUT"
 grep -q "runner.os" <<<"$OUT" || fail "the refusal did not name the non-matrix expression: $OUT"
+# shellcheck disable=SC2016 # a literal GitHub expression, on purpose
+SHA=$(wf wdexpr 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    steps:
+      - run: echo should-not-run
+        working-directory: ${{ runner.temp }}')
+OUT=$("$GATE" "$WORK/wdexpr" "$SHA" 2>&1) && fail "an expression in working-directory was accepted: $OUT"
+grep -q "REFUSED: GitHub expressions this gate cannot evaluate: .*runner.temp" <<<"$OUT" \
+    || fail "the working-directory expression was not refused by name: $OUT"
+grep -q '^>>> ' <<<"$OUT" && fail "a step ran despite the working-directory expression: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a refused matrix left its workspace behind"
+
+# 25. `if' is evaluated with GitHub's semantics, not on strings: a boolean or
+#     number axis keeps its type, == between different types compares as
+#     numbers (true is 1, a numeric string is its number), and a bare value
+#     is truthy unless it is false, 0, '' or NaN.
+# shellcheck disable=SC2016 # GitHub expressions, on purpose
+SHA=$(wf typed 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    strategy:
+      matrix:
+        flag: [true, false]
+        otp: [28]
+        v: ["3"]
+    steps:
+      - name: eq-true
+        if: matrix.flag == true
+        run: "true"
+      - name: bare-flag
+        if: matrix.flag
+        run: "true"
+      - name: number-eq
+        if: matrix.otp == 28.0
+        run: "true"
+      - name: string-eq-number
+        if: matrix.v == 3
+        run: "true"
+      - name: true-eq-one
+        if: matrix.flag == 1
+        run: "true"
+      - name: not-a-number
+        if: ${{ '"'abc'"' == 0 || !'"''"' && matrix.flag }}
+        run: "true"')
+OUT=$(GATE_DRY_RUN=1 "$GATE" "$WORK/typed" "$SHA" 2>&1) || fail "the typed matrix was refused: $OUT"
+tplan() { sed -n "/^matrix: flag=$1,otp=28,v=3\$/,/^matrix: /p" <<<"$OUT"; }
+for step in eq-true bare-flag number-eq string-eq-number true-eq-one not-a-number; do
+    grep -qx "  run: $step" <<<"$(tplan true)" || fail "with flag=true, $step did not run (CI runs it): $(tplan true)"
+done
+for step in eq-true bare-flag true-eq-one not-a-number; do
+    grep -qx "  not run: $step" <<<"$(tplan false)" || fail "with flag=false, $step ran (CI does not): $(tplan false)"
+done
+for step in number-eq string-eq-number; do
+    grep -qx "  run: $step" <<<"$(tplan false)" || fail "with flag=false, $step did not run (CI runs it): $(tplan false)"
+done
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

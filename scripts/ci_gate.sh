@@ -187,11 +187,11 @@ if matrix is not None:
             sys.exit(f"REFUSED: matrix axis {key!r} of job {job_name!r} is not a list of plain values: {values!r}")
         if any("," in sv(v) or "=" in sv(v) for v in values):
             sys.exit(f"REFUSED: matrix axis {key!r} has a value with ',' or '=': {values!r}")
-        axes[key] = [sv(v) for v in values]
+        axes[key] = values
 combos = [dict(zip(axes, vs)) for vs in itertools.product(*axes.values())] if axes else [{}]
 
 def combo_str(c):
-    return ",".join(f"{k}={v}" for k, v in c.items())
+    return ",".join(f"{k}={sv(v)}" for k, v in c.items())
 
 requested = os.environ.get("GATE_MATRIX")
 child = os.environ.get("GATE_MATRIX_CHILD") == "1"
@@ -206,51 +206,119 @@ if requested is not None:
     if any(len(p) != 2 for p in pairs) or len(set(keys)) != len(keys) or set(keys) != set(axes):
         sys.exit(f"REFUSED: GATE_MATRIX={requested!r} is not one value for each of {', '.join(axes)} "
                  f"(the combinations: {valid})")
-    selected = {k: dict(pairs)[k] for k in axes}
-    if selected not in combos:
+    given = dict(pairs)
+    matches = [c for c in combos if all(sv(c[k]) == given[k] for k in axes)]
+    if not matches:
         sys.exit(f"REFUSED: GATE_MATRIX={requested!r} is not a combination of this matrix (they are: {valid})")
+    selected = matches[0]
 
-# A step's `if', for one combination. What it may read: matrix values, string
-# and number literals, true/false, always() and success(), joined by ==, !=,
-# !, &&, || and parentheses. Strings compare case-insensitively, as GitHub
-# compares them. Anything else (failure(), steps.*, github.*, functions) is
-# refused by name on a run step. A uses: step is skipped, so its if is not
-# evaluated at all.
+# A step's `if', for one combination, with GitHub's expression semantics.
+# What it may read: matrix values (typed as the YAML has them), string and
+# number literals, true/false, always() and success(), joined by ==, !=, !,
+# && and || with parentheses; precedence ! > ==/!= > && > ||. == between two
+# strings ignores case; between different types it compares as numbers (true
+# is 1, '' is 0, a string that is not a number is NaN, which equals nothing).
+# A bare value is truthy unless it is false, 0, '' or NaN. Anything else
+# (failure(), steps.*, github.*, functions) is refused by name on a run step.
+# A uses: step is skipped, so its if is not evaluated at all.
 TOKEN = re.compile(r"\s*(?:(\(|\)|&&|\|\||!=|==|!)|(always\(\)|success\(\))|(true|false)\b"
                    r"|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)\b|matrix\.([A-Za-z_][A-Za-z0-9_-]*))")
-OPS = {"(": "(", ")": ")", "&&": " and ", "||": " or ", "!=": "!=", "==": "==", "!": " not "}
+
+def number(v):
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(v.strip()) if v.strip() else 0.0
+    except ValueError:
+        return float("nan")
+
+def equal(a, b):
+    if isinstance(a, str) and isinstance(b, str):
+        return a.lower() == b.lower()
+    if isinstance(a, bool) and isinstance(b, bool):
+        return a == b
+    return number(a) == number(b)   # NaN == anything is False
+
+def truthy(v):
+    if isinstance(v, str):
+        return v != ""
+    return v == v and v != 0        # False, 0, 0.0 and NaN are falsy
 
 def evaluate(step, combo):
     text = str(step["if"]).strip()
     whole = re.fullmatch(r"\$\{\{(.*)\}\}", text, re.S)
-    body, pos, out, status = (whole.group(1) if whole else text), 0, [], False
+    body = (whole.group(1) if whole else text).strip()
     refuse = f"REFUSED: step {label_of(step)!r} uses if: {step['if']}, which this gate cannot reproduce"
-    body = body.strip()
+    tokens, pos, status = [], 0, False
     while pos < len(body):
         m = TOKEN.match(body, pos)
         if not m or m.end() == pos:
             sys.exit(refuse)
         op, fn, lit, string, num, key = m.groups()
         if op:
-            out.append(OPS[op])
+            tokens.append(("op", op))
         elif fn:
             status = status or fn == "always()"
-            out.append("True")
+            tokens.append(("val", True))
         elif lit:
-            out.append(lit.capitalize())
+            tokens.append(("val", lit == "true"))
         elif string is not None:
-            out.append(repr(string.replace("''", "'").lower()))
+            tokens.append(("val", string.replace("''", "'")))
         elif num:
-            out.append(repr(num))
+            tokens.append(("val", float(num)))
         else:
             if key not in combo:
                 sys.exit(refuse)
-            out.append(repr(combo[key].lower()))
+            tokens.append(("val", combo[key]))
         pos = m.end()
-    try:
-        return bool(eval("".join(out), {"__builtins__": {}}, {})), status
-    except Exception:
-        sys.exit(refuse)
+    tokens.append(("end", None))
+    at = [0]
+    def peek():
+        return tokens[at[0]]
+    def take(kind, value=None):
+        t = tokens[at[0]]
+        if t[0] != kind or (value is not None and t[1] != value):
+            sys.exit(refuse)
+        at[0] += 1
+        return t[1]
+    def primary():
+        if peek() == ("op", "("):
+            take("op", "(")
+            v = disjunction()
+            take("op", ")")
+            return v
+        return take("val")
+    def unary():
+        if peek() == ("op", "!"):
+            take("op", "!")
+            return not truthy(unary())
+        return primary()
+    def comparison():
+        v = unary()
+        if peek() in (("op", "=="), ("op", "!=")):
+            op = take("op")
+            w = unary()
+            return equal(v, w) == (op == "==")
+        return v
+    def conjunction():
+        v = comparison()
+        while peek() == ("op", "&&"):
+            take("op", "&&")
+            w = comparison()
+            v = w if truthy(v) else v
+        return v
+    def disjunction():
+        v = conjunction()
+        while peek() == ("op", "||"):
+            take("op", "||")
+            w = conjunction()
+            v = v if truthy(v) else w
+        return v
+    result = disjunction()
+    take("end")
+    return truthy(result), status
 
 # ${{ matrix.X }} is substituted for the combination; any other ${{ }} is
 # evaluated by the runner before the shell sees it, which the gate cannot do,
@@ -259,7 +327,7 @@ MATRIX_EXPR = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
 EXPR = re.compile(r"\$\{\{[^}]*\}\}")
 
 def substitute(value, combo):
-    return MATRIX_EXPR.sub(lambda m: combo.get(m.group(1), m.group(0)), str(value))
+    return MATRIX_EXPR.sub(lambda m: sv(combo[m.group(1)]) if m.group(1) in combo else m.group(0), str(value))
 
 TEST = re.compile(r"\brebar3\b[^\n|;&]*\b(eunit|ct)\b|\bmix\s+test\b|\bcargo\s+(test|nextest)\b"
                   r"|\bgo\s+test\b|\bgleam\s+test\b|\bpytest\b")
@@ -275,7 +343,8 @@ def plan_for(combo):
         for k in ("run", "working-directory"):
             if k in s:
                 s[k] = substitute(s[k], combo)
-    found = (EXPR.findall(img) + [e for s in steps for e in EXPR.findall(s.get("run", ""))]
+    found = (EXPR.findall(img)
+             + [e for s in steps for k in ("run", "working-directory") for e in EXPR.findall(s.get(k, ""))]
              + [e for env in envs + [s.get("env") or {} for s in steps] for v in env.values()
                 for e in EXPR.findall(str(v))])
     if found:
