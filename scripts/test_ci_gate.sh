@@ -125,4 +125,23 @@ grep -qx "tool-found" <<<"$OUT" || fail "a GITHUB_PATH entry did not reach the n
 grep -qx "carried=from-an-earlier-step" <<<"$OUT" || fail "a GITHUB_ENV line did not reach the next step: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a carry run left its workspace behind"
 
+# 9. A job with no `container: image:' runs on the runner's own toolchain
+#    (setup-beam on ubuntu-latest), which this gate cannot reproduce: refused
+#    by name, never a traceback a caller could read as a test failure.
+SHA=$(repo nocontainer '      - run: echo should-not-run')
+sed -i '/^    container:$/d; /^      image: /d' "$WORK/nocontainer/.github/workflows/lint.yml"
+git -C "$WORK/nocontainer" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qam nocontainer
+SHA=$(git -C "$WORK/nocontainer" rev-parse HEAD)
+OUT=$("$GATE" "$WORK/nocontainer" "$SHA" 2>&1) && fail "a job with no container image was accepted: $OUT"
+grep -q "Traceback" <<<"$OUT" && fail "a job with no container image crashed the gate: $OUT"
+grep -q "REFUSED: job 'check' has no container image" <<<"$OUT" || fail "the refusal did not name the missing container: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a refused no-container run left its workspace behind"
+
+# 10. A job the workflow does not have is refused by name, not a traceback.
+SHA=$(repo nojob '      - run: echo should-not-run')
+OUT=$("$GATE" "$WORK/nojob" "$SHA" lint.yml build 2>&1) && fail "a missing job was accepted: $OUT"
+grep -q "Traceback" <<<"$OUT" && fail "a missing job crashed the gate: $OUT"
+grep -q "REFUSED: lint.yml has no job 'build'" <<<"$OUT" || fail "the refusal did not name the missing job: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a refused missing-job run left its workspace behind"
+
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

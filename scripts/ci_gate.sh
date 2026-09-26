@@ -75,8 +75,15 @@ import sys, shlex, yaml
 
 work, workflow, job_name, sha = sys.argv[1:5]
 spec = yaml.safe_load(open(f"{work}/src/.github/workflows/{workflow}"))
-job = spec["jobs"][job_name]
-image = job["container"]["image"] if isinstance(job["container"], dict) else job["container"]
+job = (spec.get("jobs") or {}).get(job_name)
+if job is None:
+    sys.exit(f"REFUSED: {workflow} has no job {job_name!r} "
+             f"(it has: {', '.join(sorted(spec.get('jobs') or {})) or 'none'})")
+container = job.get("container")
+image = container.get("image") if isinstance(container, dict) else container
+if not image:
+    sys.exit(f"REFUSED: job {job_name!r} has no container image; it runs on the runner's own "
+             "toolchain (e.g. setup-beam on ubuntu-latest), which this gate cannot reproduce")
 
 import re
 
