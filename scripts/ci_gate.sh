@@ -48,7 +48,9 @@
 # GATE_LOG_DIR (default ~/.cache/ci-gate), outside the cleaned workspace, and
 # prints the failing tests' lines, so a failure that does not come back on a
 # rerun is still named. A passing run keeps nothing; only the newest
-# GATE_LOG_KEEP (20) kept runs stay.
+# GATE_LOG_KEEP (20) kept runs stay. Runs go in GATE_LOG_DIR/runs, pruning
+# touches only the gate's own run names there, and GATE_LOG_DIR at / or $HOME
+# is refused.
 #
 # Uses podman (on host00, `docker' is rootless podman's compat API, which
 # gives containers pids.max=1). Override with ENGINE=docker elsewhere.
@@ -81,6 +83,14 @@ if ! [[ "$LOG_KEEP" =~ ^[1-9][0-9]*$ ]]; then
     echo "REFUSED: GATE_LOG_KEEP='$LOG_KEEP' is not a positive whole number"
     exit 2
 fi
+# The gate writes and prunes under LOG_DIR/runs; a slip that points it at / or
+# $HOME is refused, not trusted to the prune's own guards.
+case "$(realpath -m "$LOG_DIR")" in
+    / | "$(realpath -m "$HOME")")
+        echo "REFUSED: GATE_LOG_DIR='$LOG_DIR' is / or \$HOME; give the gate a directory of its own"
+        exit 2;;
+esac
+RUNS="$LOG_DIR/runs"
 
 # The throttle, checked before anything runs. Set but empty is a mistake, not off.
 TEST_CPUS=""
@@ -287,9 +297,10 @@ fi
 # A failure is named and kept: the lines that say which tests failed, and the
 # whole log plus the test logs outside the workspace the exit trap removes.
 # Only the newest GATE_LOG_KEEP kept runs stay; $HOME is disk, not tmpfs, but
-# it is not bottomless either.
+# it is not bottomless either. Runs live in LOG_DIR/runs, and the prune
+# touches only names of the shape written here: GATE_LOG_DIR may be shared.
 if [ "$STATUS" -ne 0 ]; then
-    KEEP="$LOG_DIR/$(basename "$REPO")-${SHA:0:12}-$(date -u +%Y%m%dT%H%M%SZ)"
+    KEEP="$RUNS/$(basename "$REPO")-$(git -C "$REPO" rev-parse "$SHA^{commit}" | head -c 12)-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$KEEP"
     sed 's/\x1b\[[0-9;]*m//g' "$WORK/job.log" > "$KEEP/job.log"
     if [ -d "$WORK/src/_build/test/logs" ]; then
@@ -300,7 +311,10 @@ if [ "$STATUS" -ne 0 ]; then
     grep -E -A2 '\*failed\*|\*timed out\*|\*\*\* .* \*\*\*|\*unexpected termination|[0-9]+ cancelled|Failed: [0-9]|[0-9]+ failures?\b|%%% .*==> |^  [0-9]+\) |^  [a-z][A-Za-z0-9_]*:[a-z][A-Za-z0-9_]*/[0-9]+|%% Unknown error' \
         "$KEEP/job.log" | head -200 || echo "(no test failure lines; see the log)"
     echo "log kept: $KEEP"
-    find "$LOG_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -rn \
+    # Two guards, so neither alone keeps the invariant: only under RUNS, and
+    # only names of exactly the shape the line above writes.
+    find "$RUNS" -mindepth 1 -maxdepth 1 -type d -regextype posix-extended \
+        -regex '.*/[^/]+-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z' -printf '%T@ %p\n' | sort -rn \
         | tail -n +$((LOG_KEEP + 1)) | while IFS=' ' read -r _ old; do
         rm -rf "$old" 2>/dev/null || "$ENGINE" unshare rm -rf "$old"
     done

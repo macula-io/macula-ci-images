@@ -163,7 +163,7 @@ fake_rebar3() {
           echo build-ran
       - run: rebar3 eunit' "$1"
 }
-kept() { find "$GATE_LOG_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l; }
+kept() { find "$GATE_LOG_DIR/runs" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l; }
 
 rm -rf "$GATE_LOG_DIR"   # the failing runs above kept theirs
 
@@ -228,7 +228,7 @@ rm -rf "$GATE_LOG_DIR"
 OUT=$("$GATE" "$WORK/keeplog" "$SHA" 2>&1) && fail "a failing eunit exited 0: $OUT"
 DIR=$(sed -n 's/^log kept: //p' <<<"$OUT")
 [ -n "$DIR" ] && [ -d "$DIR" ] || fail "no kept log directory was named: $OUT"
-case "$DIR" in "$GATE_LOG_DIR"/*) ;; *) fail "the log was kept outside GATE_LOG_DIR: $DIR";; esac
+case "$DIR" in "$GATE_LOG_DIR"/runs/keeplog-*) ;; *) fail "the log was not kept in GATE_LOG_DIR/runs: $DIR";; esac
 grep -q "mod_tests: a_test...\*failed\*" "$DIR/job.log" || fail "the kept job.log lacks the failure"
 [ "$(cat "$DIR/test-logs/ct_run.x/suite.log")" = suite-detail ] || fail "the test logs were not kept"
 SUMMARY=$(sed -n '/^failures:/,$p' <<<"$OUT")
@@ -248,11 +248,33 @@ for _ in 1 2 3; do
     sleep 1
 done
 [ "$(kept)" -eq 2 ] || fail "GATE_LOG_KEEP=2 left $(kept) kept runs"
+# Only the gate's own run directories are pruned, and two guards keep it so:
+# runs live under GATE_LOG_DIR/runs, and only names of the gate's exact shape
+# are candidates. GATE_LOG_DIR may be a shared place; the rest is not ours.
+FOREIGN=("$GATE_LOG_DIR/not-the-gates" "$GATE_LOG_DIR/keeplog-0123456789ab-20000101T000000Z"
+         "$GATE_LOG_DIR/runs/not-the-gates" "$GATE_LOG_DIR/runs/keeplog-x-y"
+         "$GATE_LOG_DIR/runs/keeplog-0123456789ab-notadate" "$GATE_LOG_DIR/runs/keeplog-0123456789AB-20000101T000000Z")
+mkdir -p "${FOREIGN[@]}"
+touch -d '2000-01-01' "${FOREIGN[@]}"
+GATE_LOG_KEEP=1 "$GATE" "$WORK/keeplog" "$SHA" >/dev/null 2>&1 && fail "a failing eunit exited 0"
+for d in "${FOREIGN[@]}"; do
+    [ -d "$d" ] || fail "pruning deleted a directory the gate did not make: $d"
+done
+[ "$(find "$GATE_LOG_DIR/runs" -mindepth 1 -maxdepth 1 -regextype posix-extended \
+      -regex '.*/keeplog-[0-9a-f]{12}-[0-9]{8}T[0-9]{6}Z' | wc -l)" -eq 1 ] \
+    || fail "GATE_LOG_KEEP=1 did not prune the gate's own runs to one"
+
 for v in 0 -1 x ""; do
     OUT=$(GATE_LOG_KEEP="$v" "$GATE" "$WORK/keeplog" "$SHA" 2>&1) && fail "GATE_LOG_KEEP='$v' was accepted: $OUT"
     grep -q "REFUSED: GATE_LOG_KEEP='$v'" <<<"$OUT" || fail "the refusal did not name GATE_LOG_KEEP='$v': $OUT"
     grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite GATE_LOG_KEEP='$v': $OUT"
 done
+# A short sha on the command line still names the run with 12 hex digits,
+# so the prune can recognise it.
+rm -rf "$GATE_LOG_DIR"
+OUT=$("$GATE" "$WORK/keeplog" "${SHA:0:7}" 2>&1) && fail "a failing eunit exited 0: $OUT"
+grep -Eq "^log kept: $GATE_LOG_DIR/runs/keeplog-${SHA:0:12}-[0-9]{8}T[0-9]{6}Z$" <<<"$OUT" \
+    || fail "a short sha did not name the run with the commit's first 12 hex digits: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a pruned run left its workspace behind"
 
 # 19. A timeout in the throttled pass says so, not that the job was too slow.
@@ -266,5 +288,13 @@ grep -qx "eunit-ran" <<<"$OUT" || fail "the plain pass did not finish first: $OU
 grep -q "REFUSED: the throttled test pass (--cpus=0.5) timed out" <<<"$OUT" || fail "the throttled timeout was not named as such: $OUT"
 grep -q "REFUSED: the job timed out" <<<"$OUT" && fail "a throttled timeout was reported as the job's: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a throttled timeout left its workspace behind"
+
+# 20. GATE_LOG_DIR at / or $HOME is refused before anything runs: the gate
+#     writes and prunes there, so a slip must not reach either.
+for v in / "$HOME" "$HOME/" "$HOME/." //; do
+    OUT=$(GATE_LOG_DIR="$v" "$GATE" "$WORK/slowhang" "$SHA" 2>&1) && fail "GATE_LOG_DIR='$v' was accepted: $OUT"
+    grep -q "REFUSED: GATE_LOG_DIR='$v'" <<<"$OUT" || fail "the refusal did not name GATE_LOG_DIR='$v': $OUT"
+    grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite GATE_LOG_DIR='$v': $OUT"
+done
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

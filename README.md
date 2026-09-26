@@ -130,7 +130,9 @@ A failed run keeps its output and `_build/test/logs` under `GATE_LOG_DIR`
 tests' lines under `failures:`: eunit's failed, timed-out and cancelled
 (`Pending:`) tests with their reason, rebar3's `Failures:` entries, ct's
 `==>` lines, and the totals. A failure that does not come back on a rerun is
-still named. Only the newest `GATE_LOG_KEEP` (20) kept runs stay.
+still named. Runs go in `GATE_LOG_DIR/runs`, and only the newest
+`GATE_LOG_KEEP` (20) stay. Pruning touches only the gate's own run names
+there, since `GATE_LOG_DIR` may be shared, and `/` or `$HOME` is refused.
 
 ## Signing an image: `attest-image.yml`
 
