@@ -17,6 +17,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export TMPDIR="$WORK/tmp"
 mkdir -p "$TMPDIR"
+# Where a failed run's logs are kept: outside TMPDIR, so leftovers() still
+# counts only workspaces, and inside WORK, so the test leaves nothing either.
+export GATE_LOG_DIR="$WORK/kept"
 
 fail() { echo "REFUSED: $*"; exit 1; }
 
@@ -87,7 +90,7 @@ SHA=$(git -C "$WORK/timeout" rev-parse HEAD)
 STARTED=$(date +%s)
 OUT=$("$GATE" "$WORK/timeout" "$SHA" 2>&1) && fail "a job past its timeout exited 0: $OUT"
 [ $(( $(date +%s) - STARTED )) -lt 120 ] || fail "timeout-minutes did not bound the run"
-grep -q "timed out" <<<"$OUT" || fail "the timeout was not reported: $OUT"
+grep -q "REFUSED: the job timed out" <<<"$OUT" || fail "the timeout was not reported: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a timed-out run left its workspace behind"
 
 # 6. A GitHub expression the gate cannot evaluate is refused, naming it.
@@ -143,5 +146,125 @@ OUT=$("$GATE" "$WORK/nojob" "$SHA" lint.yml build 2>&1) && fail "a missing job w
 grep -q "Traceback" <<<"$OUT" && fail "a missing job crashed the gate: $OUT"
 grep -q "REFUSED: lint.yml has no job 'build'" <<<"$OUT" || fail "the refusal did not name the missing job: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a refused missing-job run left its workspace behind"
+
+# A fake `rebar3' the build step installs through GITHUB_PATH, so the test
+# step looks like the real thing to the gate. $1 is its body.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+fake_rebar3() {
+    printf '      - name: build
+        run: |
+          mkdir -p /opt/fake
+          cat > /opt/fake/rebar3 <<'"'"'EOF'"'"'
+          #!/bin/sh
+          %s
+          EOF
+          chmod +x /opt/fake/rebar3
+          echo /opt/fake >> "$GITHUB_PATH"
+          echo build-ran
+      - run: rebar3 eunit' "$1"
+}
+kept() { find "$GATE_LOG_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l; }
+
+rm -rf "$GATE_LOG_DIR"   # the failing runs above kept theirs
+
+# 11. Without GATE_TEST_CPUS the gate is the CI job and nothing more: the test
+#     step runs once, uncapped below GATE_CPUS, and no throttled pass is named.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo plainrun "$(fake_rebar3 'echo "eunit-ran cpu.max=$(cat /sys/fs/cgroup/cpu.max)"')")
+OUT=$(env -u GATE_TEST_CPUS "$GATE" "$WORK/plainrun" "$SHA" 2>&1) || fail "the fake-rebar3 job failed: $OUT"
+[ "$(grep -c "^eunit-ran" <<<"$OUT")" -eq 1 ] || fail "without GATE_TEST_CPUS the test step did not run exactly once: $OUT"
+grep -q "throttled" <<<"$OUT" && fail "a throttled pass ran without GATE_TEST_CPUS: $OUT"
+[ "$(kept)" -eq 0 ] || fail "a passing run kept a log"
+
+# 12. GATE_TEST_CPUS=0.5 re-runs only the test steps, after the normal job,
+#     with the carried PATH, capped at half a CPU, and the report names it.
+OUT=$(GATE_TEST_CPUS=0.5 "$GATE" "$WORK/plainrun" "$SHA" 2>&1) || fail "a throttled passing job failed: $OUT"
+[ "$(grep -cx "build-ran" <<<"$OUT")" -eq 1 ] || fail "the throttled pass re-ran a build step: $OUT"
+[ "$(grep -c "^eunit-ran" <<<"$OUT")" -eq 2 ] || fail "the test step did not run once plain and once throttled: $OUT"
+grep -qx "eunit-ran cpu.max=50000 100000" <<<"$OUT" || fail "the throttled pass was not capped at 0.5 CPU: $OUT"
+grep -q "throttled test pass passed under --cpus=0.5" <<<"$OUT" || fail "the report did not name the cap: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a throttled run left its workspace behind"
+
+# 13. GATE_TEST_CPUS=runner is the measured default: at least as slow as a
+#     GitHub-hosted runner at p90.
+OUT=$(GATE_TEST_CPUS=runner "$GATE" "$WORK/plainrun" "$SHA" 2>&1) || fail "GATE_TEST_CPUS=runner failed: $OUT"
+grep -qx "eunit-ran cpu.max=50000 100000" <<<"$OUT" || fail "GATE_TEST_CPUS=runner is not 0.5: $OUT"
+
+# 14. A malformed cap is refused before anything runs, naming the value. A
+#     whole CPU or more is not a throttle; the default gate already runs at 4.
+for v in abc 0 0.0 1 1.0 1.5 -0.5 .5 0.5x ""; do
+    OUT=$(GATE_TEST_CPUS="$v" "$GATE" "$WORK/plainrun" "$SHA" 2>&1) && fail "GATE_TEST_CPUS='$v' was accepted: $OUT"
+    grep -q "REFUSED: GATE_TEST_CPUS='$v'" <<<"$OUT" || fail "the refusal did not name GATE_TEST_CPUS='$v': $OUT"
+    grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite GATE_TEST_CPUS='$v': $OUT"
+done
+[ "$(leftovers)" -eq 0 ] || fail "a refused cap left its workspace behind"
+
+# 15. A throttle on a job with no test step is refused, naming the steps.
+SHA=$(repo notests '      - name: only a build
+        run: echo build-ran')
+OUT=$(GATE_TEST_CPUS=0.5 "$GATE" "$WORK/notests" "$SHA" 2>&1) && fail "a throttle with no test step was accepted: $OUT"
+grep -q "REFUSED: GATE_TEST_CPUS is set but job 'check' has no test step" <<<"$OUT" || fail "the refusal was not named: $OUT"
+grep -q "only a build" <<<"$OUT" || fail "the refusal did not list the steps: $OUT"
+grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite the refusal: $OUT"
+
+# 16. A test that only fails when slow: green plain, red throttled, and the
+#     gate fails naming the cap, with the failing test in its summary.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo slowred "$(fake_rebar3 'case "$(cat /sys/fs/cgroup/cpu.max)" in 50000*) echo "keygen_tests: corrupted_first...*timed out*"; exit 1;; esac; echo eunit-ran')")
+OUT=$(GATE_TEST_CPUS=0.5 "$GATE" "$WORK/slowred" "$SHA" 2>&1) && fail "a test red under the throttle exited 0: $OUT"
+grep -qx "eunit-ran" <<<"$OUT" || fail "the plain pass did not run green first: $OUT"
+grep -q "throttled test pass FAILED under --cpus=0.5" <<<"$OUT" || fail "the throttled failure did not name the cap: $OUT"
+SUMMARY=$(sed -n '/^failures:/,/^log kept:/p' <<<"$OUT")
+grep -q "corrupted_first...\*timed out\*" <<<"$SUMMARY" || fail "the summary did not name the failing test: $OUT"
+grep -q "throttled test pass FAILED" <<<"$SUMMARY" && fail "the summary listed the gate's own report line: $SUMMARY"
+[ "$(leftovers)" -eq 0 ] || fail "a throttled failure left its workspace behind"
+
+# 17. A failed run keeps its log and the test logs outside the cleaned
+#     workspace, and prints the failing tests' lines, so a failure that does
+#     not come back on a rerun is still named.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo keeplog "$(fake_rebar3 'mkdir -p _build/test/logs/ct_run.x; echo suite-detail > _build/test/logs/ct_run.x/suite.log; echo "mod_tests: a_test...*failed*"; echo "  in function mod_tests:a_test/0"; echo "Failures:"; echo "  1) mod_tests:b_test/0"; echo "Pending:"; echo "  mod_tests:slow_test/0: the slow one"; echo "    %% Unknown error: {timeout,"; echo "Failed: 1.  Skipped: 0.  Passed: 9."; exit 1')")
+rm -rf "$GATE_LOG_DIR"
+OUT=$("$GATE" "$WORK/keeplog" "$SHA" 2>&1) && fail "a failing eunit exited 0: $OUT"
+DIR=$(sed -n 's/^log kept: //p' <<<"$OUT")
+[ -n "$DIR" ] && [ -d "$DIR" ] || fail "no kept log directory was named: $OUT"
+case "$DIR" in "$GATE_LOG_DIR"/*) ;; *) fail "the log was kept outside GATE_LOG_DIR: $DIR";; esac
+grep -q "mod_tests: a_test...\*failed\*" "$DIR/job.log" || fail "the kept job.log lacks the failure"
+[ "$(cat "$DIR/test-logs/ct_run.x/suite.log")" = suite-detail ] || fail "the test logs were not kept"
+SUMMARY=$(sed -n '/^failures:/,$p' <<<"$OUT")
+grep -q "mod_tests: a_test...\*failed\*" <<<"$SUMMARY" || fail "the summary did not name the failing test: $OUT"
+grep -q "in function mod_tests:a_test/0" <<<"$SUMMARY" || fail "the summary lost the failure's detail line: $OUT"
+grep -q "Failed: 1." <<<"$SUMMARY" || fail "the summary lost the totals: $OUT"
+grep -q "1) mod_tests:b_test/0" <<<"$SUMMARY" || fail "the summary lost rebar3's Failures entry: $OUT"
+grep -q "mod_tests:slow_test/0: the slow one" <<<"$SUMMARY" || fail "the summary did not name the cancelled (Pending) test: $OUT"
+grep -q "Unknown error: {timeout," <<<"$SUMMARY" || fail "the summary lost why the pending test was cancelled: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a kept-log run left its workspace behind"
+
+# 18. Kept logs are pruned to the newest GATE_LOG_KEEP, and a malformed
+#     GATE_LOG_KEEP is refused before anything runs.
+rm -rf "$GATE_LOG_DIR"
+for _ in 1 2 3; do
+    GATE_LOG_KEEP=2 "$GATE" "$WORK/keeplog" "$SHA" >/dev/null 2>&1 && fail "a failing eunit exited 0"
+    sleep 1
+done
+[ "$(kept)" -eq 2 ] || fail "GATE_LOG_KEEP=2 left $(kept) kept runs"
+for v in 0 -1 x ""; do
+    OUT=$(GATE_LOG_KEEP="$v" "$GATE" "$WORK/keeplog" "$SHA" 2>&1) && fail "GATE_LOG_KEEP='$v' was accepted: $OUT"
+    grep -q "REFUSED: GATE_LOG_KEEP='$v'" <<<"$OUT" || fail "the refusal did not name GATE_LOG_KEEP='$v': $OUT"
+    grep -qx "build-ran" <<<"$OUT" && fail "a step ran despite GATE_LOG_KEEP='$v': $OUT"
+done
+[ "$(leftovers)" -eq 0 ] || fail "a pruned run left its workspace behind"
+
+# 19. A timeout in the throttled pass says so, not that the job was too slow.
+# shellcheck disable=SC2016 # expanded inside the container, on purpose
+SHA=$(repo slowhang "$(fake_rebar3 'case "$(cat /sys/fs/cgroup/cpu.max)" in 50000*) sleep 600;; esac; echo eunit-ran')")
+sed -i 's/^    runs-on: ubuntu-latest$/    runs-on: ubuntu-latest\n    timeout-minutes: 0.25/' "$WORK/slowhang/.github/workflows/lint.yml"
+git -C "$WORK/slowhang" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qam slowhang
+SHA=$(git -C "$WORK/slowhang" rev-parse HEAD)
+OUT=$(GATE_TEST_CPUS=0.5 "$GATE" "$WORK/slowhang" "$SHA" 2>&1) && fail "a throttled pass past the timeout exited 0: $OUT"
+grep -qx "eunit-ran" <<<"$OUT" || fail "the plain pass did not finish first: $OUT"
+grep -q "REFUSED: the throttled test pass (--cpus=0.5) timed out" <<<"$OUT" || fail "the throttled timeout was not named as such: $OUT"
+grep -q "REFUSED: the job timed out" <<<"$OUT" && fail "a throttled timeout was reported as the job's: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a throttled timeout left its workspace behind"
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

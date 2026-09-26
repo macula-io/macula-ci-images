@@ -104,6 +104,34 @@ other `if`, `shell`, `continue-on-error`, a step's `timeout-minutes`, and
 `GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 
+**Before any release tag, gate with `GATE_TEST_CPUS=runner`.** After the job
+passes, it restarts the same container with its cap lowered to half a CPU and
+re-runs only the test steps (`rebar3 eunit`/`ct`, `mix test`, `cargo test`,
+`go test`, `gleam test`, `pytest`), and the report names the cap. A
+GitHub-hosted runner's core is slower than host00's, and how much slower
+depends on the machine you get. A test that only fits its timeout on a fast
+core passes here and fails on CI; mcl-om 9c576f0 did exactly that. `--cpus=1`
+cannot show it, because one host00 core is about as fast as a typical runner.
+`runner` means 0.5, the largest cap that is at least as slow as the slowest
+runner's p90 on 2026-09-26:
+
+| 20 pq_hybrid keygens | p90 (ms) |
+|---|---|
+| GitHub runner, 9 benches (EPYC 7763 / 9V45) | 570 to 1290 |
+| host00, uncapped / 1.0 / 0.5 / 0.25 | 525 / 669 / 1519 / 2295 |
+
+It detects tails, it does not prove their absence: 9c576f0 went red at 0.5 in
+2 of 3 runs. Any other value must be a decimal strictly between 0 and 1. The
+gate refuses a malformed value, and refuses a job with no test step. Without
+`GATE_TEST_CPUS`, the gate is the CI job and nothing more.
+
+A failed run keeps its output and `_build/test/logs` under `GATE_LOG_DIR`
+(`~/.cache/ci-gate`), outside the workspace it cleans, and prints the failing
+tests' lines under `failures:`: eunit's failed, timed-out and cancelled
+(`Pending:`) tests with their reason, rebar3's `Failures:` entries, ct's
+`==>` lines, and the totals. A failure that does not come back on a rerun is
+still named. Only the newest `GATE_LOG_KEEP` (20) kept runs stay.
+
 ## Signing an image: `attest-image.yml`
 
 A reusable workflow every image build calls after it pushes, so a box can refuse any
