@@ -1,0 +1,70 @@
+# Self-test for attest-image.yml, so a change to the signing workflow is proven on a
+# throwaway image before any service calls it.
+#
+# Builds a one-file image, pushes it by digest to ghcr.io/macula-io/attest-image-selftest,
+# and calls attest-image.yml on that digest. The called workflow ends by verifying the
+# signature and both attestations against the identity a box will check, so this run is
+# green only when a verifier would accept the result.
+#
+# The image carries the commit and run in its one file, so every run signs a new digest:
+# a stale signature from an earlier run cannot make a broken change look green.
+
+name: attest image self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/attest-image.yml'
+      - '.github/workflows/attest-image-selftest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attest-image-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: A one-file image unique to this run
+        run: |
+          mkdir ctx
+          printf 'attest-image self-test %s run %s/%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > ctx/stamp
+          printf 'FROM scratch\nCOPY stamp /stamp\n' > ctx/Containerfile
+
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ctx
+          file: ctx/Containerfile
+          push: true
+          provenance: false
+          sbom: false
+          tags: ghcr.io/macula-io/attest-image-selftest:${{ github.sha }}
+
+  attest:
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/attest-image.yml
+    with:
+      image: ghcr.io/macula-io/attest-image-selftest
+      digest: ${{ needs.build.outputs.digest }}

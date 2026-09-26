@@ -104,6 +104,39 @@ other `if`, `shell`, `continue-on-error`, a step's `timeout-minutes`, and
 `GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 
+## Signing an image: `attest-image.yml`
+
+A reusable workflow every image build calls after it pushes, so a box can refuse any
+digest that did not come from our CI on our commit. For one digest it:
+
+1. signs it with cosign, **keyless**: GitHub's OIDC token gets a short-lived Fulcio
+   certificate for this workflow's identity, and the signature goes to the **public**
+   Rekor log. There is no key to leak or rotate.
+2. attests its **SBOM** (syft, SPDX JSON, read from the registry, not a local daemon);
+3. attests its **provenance** (SLSA v1: repository, ref, commit, calling workflow, run);
+4. verifies all three with the identity a box checks, so a green job means a verifier
+   accepts the digest.
+
+```yaml
+attest:
+  needs: build-and-push
+  permissions: { contents: read, packages: write, id-token: write }
+  uses: macula-io/macula-ci-images/.github/workflows/attest-image.yml@<full commit sha>
+  with:
+    image: ghcr.io/<org>/<name>
+    digest: ${{ needs.build-and-push.outputs.digest }}
+    runs-on: '["self-hosted","host00"]'   # private repos; public ones omit it (ubuntu-latest)
+```
+
+Call it by **full commit sha**, never `@main`: the signing identity is this file at the
+ref the caller names. What a verifier checks: issuer
+`https://token.actions.githubusercontent.com`, identity matching
+`^https://github\.com/macula-io/macula-ci-images/\.github/workflows/attest-image\.yml@`,
+and the certificate's GitHub workflow repository equal to the calling repository.
+
+`attest-image-selftest.yml` proves any change to it on a throwaway one-file image
+(`ghcr.io/macula-io/attest-image-selftest`) before a service calls it.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:
