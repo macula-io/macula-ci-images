@@ -102,7 +102,9 @@ steps. A step whose `if` has `always()` runs after a failure; the job's
 combination, each on a fresh export and container, with `${{ matrix.X }}`
 substituted and each step's `if` evaluated for it (matrix values, literals,
 `==`, `!=`, `!`, `&&`, `||`, `always()`, `success()`). Every combination runs
-even after one fails, and the gate fails if any did; `GATE_MATRIX=check=eunit`
+even after one fails, and the gate fails if any did, or if fewer combinations
+report than it planned (on 2026-09-27 a throttled fan-out ran one combination of
+four and reported green; fixed in 2e65f81); `GATE_MATRIX=check=eunit`
 runs one, and `GATE_DRY_RUN=1` prints each combination's plan and runs
 nothing. It refuses what it cannot reproduce (an `if` on a run step reading
 anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;

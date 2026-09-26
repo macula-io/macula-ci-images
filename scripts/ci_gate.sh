@@ -498,7 +498,7 @@ if [ -e "$WORK/fanout" ]; then
     local planned
     planned=$(grep -c . "$WORK/fanout")
     if [ "${#results[@]}" -ne "$planned" ]; then
-        echo "REFUSED: the matrix planned $planned combinations but $((${#results[@]})) reported"
+        echo "REFUSED: the matrix planned $planned combinations but ${#results[@]} reported"
         exit 1
     fi
     exit "$status"
