@@ -39,16 +39,26 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libssl-dev \
       openssl \
       cmake \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 # Rust, because several macula deps are NIFs with no Erlang fallback:
 # macula_quic refuses to compile without a toolchain and says so.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# rustup downloads the components concurrently and lists them in
+# rustlib/components in the order they finish, so the layer changed from build
+# to build. Sorted, it is the same bytes every time; the check after it proves
+# rustup still reads the sorted file and sees exactly these components.
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && components="$(rustc --print sysroot)/lib/rustlib/components" \
+    && sort -o "$components" "$components" \
+    && [ "$(rustup component list --installed | tr '\n' ' ')" = \
+         "cargo-x86_64-unknown-linux-gnu rust-std-x86_64-unknown-linux-gnu rustc-x86_64-unknown-linux-gnu " ] \
     && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
     && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
     && rustc --version && cargo --version

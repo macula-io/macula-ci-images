@@ -1,0 +1,176 @@
+# Are the base images reproducible? Two uncached builds of the same inputs,
+# back to back, must give identical layers, for every image this repo
+# publishes.
+#
+# This exists so "the same image" can mean the same bytes: a consumer that
+# pins a base can then tell a real change (a new Debian package, a new
+# toolchain) from a rebuild that only moved timestamps. Before this, every
+# daily rebuild gave the rocksdb images new layers and every weekly uncached
+# one did the same to the rest, with nothing inside having changed.
+#
+# What makes them reproducible (build.yml publishes the same way):
+#   - SOURCE_DATE_EPOCH is midnight UTC of the dated Debian base the resolver
+#     picks, NOT the commit time: a commit that changes no content must not
+#     move an image, and a new Debian base is a real change that should. The
+#     rocksdb images take it from their base's io.macula.debian-base label.
+#   - the image output rewrites every file's timestamp to it;
+#   - the Containerfiles remove what records the time or the order things
+#     happened in: apt, dpkg and ldconfig logs and caches, hex's cache.ets,
+#     mix's /tmp lock and pubsub files, and rustup's components list (sorted:
+#     rustup downloads components concurrently and lists them as they land);
+#   - Elixir's own build (ex118) is compiled deterministic, with
+#     SOURCE_DATE_EPOCH for its System.build_info date.
+#
+# Two back-to-back builds see the same apt archive; a different package
+# version between weeks is a real change, and is meant to move the image.
+# When layers differ, the job names the files that differ.
+name: reproducibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Containerfile.*'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/reproducibility.yml'
+      - 'scripts/newest_dated_base.py'
+  schedule:
+    # Sunday 05:00 UTC, after build.yml's weekly uncached build (03:00).
+    - cron: '0 5 * * 0'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  twice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: macula-pq-runtime
+            file: Containerfile.pq-runtime
+          - image: macula-ci-otp
+            file: Containerfile.ci-otp
+          - image: macula-ci-pq
+            file: Containerfile.ci-pq
+          - image: macula-ci-pq-ex118
+            file: Containerfile.ci-pq-ex118
+          - image: macula-ci-gleam
+            file: Containerfile.ci-gleam
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the newest dated base and its epoch
+        id: base
+        run: |
+          set -euo pipefail
+          debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
+          day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
+          [ -n "$day" ] || { echo "REFUSED: no date in the resolved base '$debian'"; exit 1; }
+          echo "debian=$debian" >> "$GITHUB_OUTPUT"
+          echo "epoch=$(date -u -d "$day" +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: First build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          outputs: type=docker,name=repro-a,rewrite-timestamp=true
+          build-args: |
+            DEBIAN_VERSION=${{ steps.base.outputs.debian }}
+            SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
+          no-cache: true
+          pull: true
+          provenance: false
+
+      - name: Second build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          outputs: type=docker,name=repro-b,rewrite-timestamp=true
+          build-args: |
+            DEBIAN_VERSION=${{ steps.base.outputs.debian }}
+            SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
+          no-cache: true
+          pull: true
+          provenance: false
+
+      - name: Compare the layers
+        run: bash scripts/compare_image_layers.sh repro-a repro-b
+
+  # The rocksdb images, built FROM the images above by digest. Both builds get
+  # the same base digests, today's published ones, so the only variable is the
+  # build itself. librocksdb is compiled in both.
+  twice-rocksdb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macula-ci-otp-rocksdb, macula-pq-runtime-rocksdb, macula-ci-pq-ex118-rocksdb]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Resolve the base digests and the epoch
+        id: bases
+        run: |
+          set -euo pipefail
+          digest() {
+            d=$(docker buildx imagetools inspect "ghcr.io/macula-io/$1:${2:-latest}" --format '{{json .Manifest}}' | jq -r .digest)
+            case "$d" in sha256:*) echo "ghcr.io/macula-io/$1@$d" ;; *) echo "REFUSED: no digest for $1:${2:-latest}" >&2; exit 1 ;; esac
+          }
+          ci_otp=$(digest macula-ci-otp)
+          debian=$(docker buildx imagetools inspect "$ci_otp" --format '{{json .Image}}' \
+                     | jq -r '.config.Labels["io.macula.debian-base"] // empty')
+          day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
+          [ -n "$day" ] || { echo "REFUSED: $ci_otp has no dated io.macula.debian-base label ('$debian')"; exit 1; }
+          {
+            echo "ci_otp=$ci_otp"
+            echo "pq_runtime=$(digest macula-pq-runtime)"
+            echo "ci_pq_ex118=$(digest macula-ci-pq ex118-latest)"
+            echo "epoch=$(date -u -d "$day" +%s)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: First build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile.rocksdb
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          outputs: type=docker,name=repro-a,rewrite-timestamp=true
+          build-args: |
+            CI_OTP=${{ steps.bases.outputs.ci_otp }}
+            PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
+            CI_PQ_EX118=${{ steps.bases.outputs.ci_pq_ex118 }}
+            SOURCE_DATE_EPOCH=${{ steps.bases.outputs.epoch }}
+          no-cache: true
+          provenance: false
+
+      - name: Second build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Containerfile.rocksdb
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          outputs: type=docker,name=repro-b,rewrite-timestamp=true
+          build-args: |
+            CI_OTP=${{ steps.bases.outputs.ci_otp }}
+            PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
+            CI_PQ_EX118=${{ steps.bases.outputs.ci_pq_ex118 }}
+            SOURCE_DATE_EPOCH=${{ steps.bases.outputs.epoch }}
+          no-cache: true
+          provenance: false
+
+      - name: Compare the layers
+        run: bash scripts/compare_image_layers.sh repro-a repro-b

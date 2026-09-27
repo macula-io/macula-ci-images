@@ -19,9 +19,13 @@ on:
       - 'scripts/test_ci_gate.sh'
       - 'scripts/fixtures/**'
       - 'scripts/test_newest_dated_base.sh'
+      - 'scripts/compare_image_layers.sh'
+      - 'scripts/test_compare_image_layers.sh'
       # The signing workflow and its self-test build no base image.
       - '.github/workflows/attest-image.yml'
       - '.github/workflows/attest-image-selftest.yml'
+      # The reproducibility check builds and publishes nothing.
+      - '.github/workflows/reproducibility.yml'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the
@@ -95,12 +99,24 @@ jobs:
       # file. The Containerfile's own DEBIAN_VERSION is only the local-build
       # default. An unresolvable base FAILS the job: the assignment below is
       # its own statement, so the resolver's exit status stops the step.
+      #
+      # The build is REPRODUCIBLE: the same inputs give the same layers, so a
+      # rebuild that changes nothing inside publishes the same layers and a
+      # consumer can tell a real change from a timestamp. SOURCE_DATE_EPOCH is
+      # midnight UTC of the resolved base's date (a new base is a real change,
+      # a commit that changes no content is not), and the image output rewrites
+      # every file's time to it. reproducibility.yml proves it.
       - name: Resolve the newest dated base
         id: base
         run: |
+          set -euo pipefail
           debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
+          day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
+          [ -n "$day" ] || { echo "REFUSED: no date in the resolved base '$debian'"; exit 1; }
+          epoch=$(date -u -d "$day" +%s)
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
-          echo "Building ${{ matrix.image }} (${{ matrix.file }}) on DEBIAN_VERSION=$debian"
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
+          echo "Building ${{ matrix.image }} (${{ matrix.file }}) on DEBIAN_VERSION=$debian, SOURCE_DATE_EPOCH=$epoch"
 
       - uses: docker/login-action@v3
         with:
@@ -134,7 +150,7 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           platforms: linux/amd64
-          push: true
+          outputs: type=image,push=true,rewrite-timestamp=true
           tags: ${{ steps.meta.outputs.tags }}
           # The resolved base is stamped on the image, so what it was built on
           # is readable from the image itself, not only from this run's log.
@@ -143,6 +159,7 @@ jobs:
             io.macula.debian-base=${{ steps.base.outputs.debian }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
+            SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
           no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
           cache-from: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }}
           cache-to: type=gha,scope=${{ matrix.image }}${{ matrix.tag_prefix }},mode=max
@@ -189,10 +206,18 @@ jobs:
           ci_otp=$(digest macula-ci-otp)
           pq_runtime=$(digest macula-pq-runtime)
           ci_pq_ex118=$(digest macula-ci-pq ex118-latest)
+          # The epoch of the base these images are built FROM, read from that
+          # exact digest's label: never a second resolve, which could see a
+          # newer Debian base than the one the base image was built on.
+          debian=$(docker buildx imagetools inspect "$ci_otp" --format '{{json .Image}}' \
+                     | jq -r '.config.Labels["io.macula.debian-base"] // empty')
+          day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
+          [ -n "$day" ] || { echo "REFUSED: $ci_otp has no dated io.macula.debian-base label ('$debian')"; exit 1; }
           {
             echo "ci_otp=$ci_otp"
             echo "pq_runtime=$pq_runtime"
             echo "ci_pq_ex118=$ci_pq_ex118"
+            echo "epoch=$(date -u -d "$day" +%s)"
           } >> "$GITHUB_OUTPUT"
           echo "Building ${{ matrix.target }} on CI_OTP=$ci_otp PQ_RUNTIME=$pq_runtime CI_PQ_EX118=$ci_pq_ex118"
 
@@ -212,7 +237,7 @@ jobs:
           file: Containerfile.rocksdb
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          push: true
+          outputs: type=image,push=true,rewrite-timestamp=true
           tags: ${{ steps.meta.outputs.tags }}
           labels: |
             ${{ steps.meta.outputs.labels }}
@@ -223,6 +248,7 @@ jobs:
             CI_OTP=${{ steps.bases.outputs.ci_otp }}
             PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
             CI_PQ_EX118=${{ steps.bases.outputs.ci_pq_ex118 }}
+            SOURCE_DATE_EPOCH=${{ steps.bases.outputs.epoch }}
           no-cache: ${{ github.event.schedule == '0 3 * * 0' }}
           # One scope for both targets: the librocksdb stage is identical in
           # both, so whichever job builds it first serves it to later runs.

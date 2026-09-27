@@ -63,15 +63,22 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libssl-dev \
       openssl \
       cmake \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 # Elixir, compiled by this image's OTP 28.4.3.
+# Elixir stamps System.build_info's date from SOURCE_DATE_EPOCH when it is
+# set, and from the clock otherwise; declared here so the build arg reaches the
+# compile. With ERL_COMPILER_OPTIONS=deterministic, the rest of the compiled
+# standard library is byte-identical build to build.
+ARG SOURCE_DATE_EPOCH
 RUN curl -fsSL -o /tmp/elixir.tar.gz \
       "https://github.com/elixir-lang/elixir/archive/refs/tags/v${ELIXIR_VERSION}.tar.gz" \
     && echo "${ELIXIR_SRC_SHA256}  /tmp/elixir.tar.gz" | sha256sum -c - \
     && mkdir /tmp/elixir-src \
     && tar -xzf /tmp/elixir.tar.gz -C /tmp/elixir-src --strip-components=1 \
-    && make -C /tmp/elixir-src compile \
+    && ERL_COMPILER_OPTIONS=deterministic make -C /tmp/elixir-src compile \
     && make -C /tmp/elixir-src install PREFIX=/usr/local \
     && rm -rf /tmp/elixir-src /tmp/elixir.tar.gz \
     && elixir --short-version | grep -qx "${ELIXIR_VERSION}" \
@@ -81,9 +88,17 @@ RUN curl -fsSL -o /tmp/elixir.tar.gz \
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
+# rustup downloads the components concurrently and lists them in
+# rustlib/components in the order they finish, so the layer changed from build
+# to build. Sorted, it is the same bytes every time; the check after it proves
+# rustup still reads the sorted file and sees exactly these components.
 RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
       | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && components="$(rustc --print sysroot)/lib/rustlib/components" \
+    && sort -o "$components" "$components" \
+    && [ "$(rustup component list --installed | tr '\n' ' ')" = \
+         "cargo-x86_64-unknown-linux-gnu rust-std-x86_64-unknown-linux-gnu rustc-x86_64-unknown-linux-gnu " ] \
     && rustc --version | grep -qF "rustc ${RUST_VERSION} " \
     && cargo --version | grep -qF "cargo ${RUST_VERSION} " \
     && rustc --version && cargo --version
@@ -113,7 +128,8 @@ RUN archive="hex-${HEX_VERSION}-otp-${HEX_OTP_BUILD}.ez" \
     && grep -qE "^Hex: +${HEX_VERSION}$" /tmp/hex-info.txt \
     && grep -qE "^Elixir: +${ELIXIR_VERSION}$" /tmp/hex-info.txt \
     && grep -qE "^OTP: +${OTP_VERSION}$" /tmp/hex-info.txt \
-    && cat /tmp/hex-info.txt && rm /tmp/hex-info.txt
+    && cat /tmp/hex-info.txt && rm /tmp/hex-info.txt \
+    && rm -f "${HEX_HOME:-$HOME/.hex}/cache.ets"
 
 # Refuse to ship an image that cannot do the one thing it exists for.
 RUN openssl version \

@@ -206,6 +206,24 @@ at once.
 it before changing the resolver, as `scripts/test_ci_gate.sh` before changing
 the gate.
 
+**The builds are reproducible.** Two uncached builds of the same inputs give
+identical layers, so a rebuild that changes nothing inside publishes the same
+layers, and a consumer can tell a real change (a new Debian package, a new
+toolchain, a new base) from a timestamp. `SOURCE_DATE_EPOCH` is midnight UTC of
+the resolved Debian base's date, never the commit time (the rocksdb images read
+it from their base's `io.macula.debian-base` label), and the published image
+rewrites every file's time to it. The Containerfiles remove what records a time
+or an order: apt, dpkg and ldconfig logs and caches, hex's `cache.ets`, mix's
+`/tmp` lock and pubsub files; they sort rustup's `components` list (downloaded
+concurrently, listed as each lands) and check rustup still reads it; and
+Elixir's own build in ex118 is compiled `deterministic` with the epoch as its
+build date. `.github/workflows/reproducibility.yml` proves it: every image, the
+three rocksdb ones included, built twice uncached and compared layer by layer,
+naming the files that differ when they do (`scripts/compare_image_layers.sh`,
+tested by `scripts/test_compare_image_layers.sh`). It runs on every change to
+a Containerfile, the build or the resolver, and weekly after the uncached
+build.
+
 `scripts/test_new_base_changes_layers.sh` is the proof that this moves
 anything: it builds one Containerfile on two dated bases and refuses unless both
 pass their tool assertions and every layer, base included, differs. (Before

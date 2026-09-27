@@ -44,6 +44,9 @@ FROM ${CI_OTP} AS librocksdb
 
 # A failed first command in a pipe (curl, tar, ldd) must fail the step.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# CMake stamps RocksDB's build date (util/build_version.cc) from
+# SOURCE_DATE_EPOCH when it is set; declared so the build arg reaches it.
+ARG SOURCE_DATE_EPOCH
 
 ARG ERLANG_ROCKSDB_VERSION
 ARG ERLANG_ROCKSDB_SHA256
@@ -55,7 +58,9 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libzstd-dev \
       zlib1g-dev \
       libbz2-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 WORKDIR /src
 RUN curl -fsSL -o rocksdb.tar \
@@ -114,11 +119,13 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libzstd-dev \
       zlib1g-dev \
       libbz2-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 COPY --from=librocksdb /out/lib/ /usr/local/lib/
 COPY --from=librocksdb /out/include/ /usr/local/include/
-RUN ldconfig
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 # Every `rebar3 compile' in this image links the NIF against the library
 # above instead of building RocksDB from the bundled source.
@@ -144,7 +151,7 @@ RUN mkdir src \
          {ok, <<"v">>} = rocksdb:get(Db, <<"k">>, []), \
          ok = rocksdb:close(Db), \
          io:format("rocksdb selftest ok~n"), halt(0).' \
-    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3
+    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3 "${HEX_HOME:-$HOME/.hex}/cache.ets"
 WORKDIR /
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
@@ -165,11 +172,13 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libzstd-dev \
       zlib1g-dev \
       libbz2-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 COPY --from=librocksdb /out/lib/ /usr/local/lib/
 COPY --from=librocksdb /out/include/ /usr/local/include/
-RUN ldconfig
+RUN ldconfig && rm -f /var/cache/ldconfig/aux-cache
 
 # mix compiles the rocksdb dep with rebar3, which inherits these.
 ENV ERLANG_ROCKSDB_OPTS="-DWITH_SYSTEM_ROCKSDB=ON"
@@ -191,7 +200,8 @@ RUN mkdir -p lib \
          {:ok, "v"} = :rocksdb.get(db, "k", []); \
          :ok = :rocksdb.close(db); \
          IO.puts("rocksdb mix selftest ok")' \
-    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3
+    && cd / && rm -rf /tmp/selftest /root/.cache/rebar3 "${HEX_HOME:-$HOME/.hex}/cache.ets" \
+              /tmp/mix_lock_* /tmp/mix_pubsub_*
 WORKDIR /
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
@@ -211,13 +221,16 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libzstd1 \
       zlib1g \
       libbz2-1.0 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
+              /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
 
 COPY --from=librocksdb /out/lib/ /usr/local/lib/
 RUN ldconfig \
     && ldconfig -p | grep -F "librocksdb.so.${ROCKSDB_VERSION%%.*} " \
     && ! ldd "/usr/local/lib/librocksdb.so.${ROCKSDB_VERSION}" | grep -F "not found" \
-    && echo "librocksdb ${ROCKSDB_VERSION} resolves"
+    && echo "librocksdb ${ROCKSDB_VERSION} resolves" \
+    && rm -f /var/cache/ldconfig/aux-cache
 
 LABEL org.opencontainers.image.source=https://github.com/macula-io/macula-ci-images
 LABEL org.opencontainers.image.description="Macula runtime base for releases that link erlang rocksdb: macula-pq-runtime (Debian trixie, OpenSSL 3.5+ ML-DSA) plus shared librocksdb 11.1.2 and its compression libraries"
