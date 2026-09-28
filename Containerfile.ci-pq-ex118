@@ -29,6 +29,14 @@ ARG ELIXIR_SRC_SHA256=8e136c0a92160cdad8daa74560e0e9c6810486bd232fbce1709d40fcc4
 ARG REBAR3_VERSION=3.27.0
 ARG REBAR3_SHA256=af85aab41f9fd74bdd6341ebdf6fe9c88077aab9f8eac82371583fa02f2b0bdf
 ARG RUST_VERSION=1.98.1
+# rustup's installer, pinned like rebar3: the exact rustup-init release,
+# checked against the sha256 rust-lang publishes beside it
+# (static.rust-lang.org/rustup/archive/<version>/x86_64-unknown-linux-gnu/
+# rustup-init.sha256). It used to be piped from sh.rustup.rs unchecked, so a
+# rustup release or a compromised host changed every image with no commit
+# here. Change the two together.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_INIT_SHA256=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
 # Hex 2.5.1. hex.csv has no OTP-28 build for Elixir 1.18; the newest that
 # applies is installs/1.18.0/hex-2.5.1-otp-27, which is also what
 # `mix local.hex' picks for Elixir 1.18 on OTP 28. OTP-27 beams load on
@@ -46,6 +54,8 @@ ARG ELIXIR_SRC_SHA256
 ARG REBAR3_VERSION
 ARG REBAR3_SHA256
 ARG RUST_VERSION
+ARG RUSTUP_VERSION
+ARG RUSTUP_INIT_SHA256
 ARG HEX_VERSION
 ARG HEX_ELIXIR_BUILD
 ARG HEX_OTP_BUILD
@@ -92,8 +102,13 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 # rustlib/components in the order they finish, so the layer changed from build
 # to build. Sorted, it is the same bytes every time; the check after it proves
 # rustup still reads the sorted file and sees exactly these components.
-RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
-      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+RUN curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+    && echo "${RUSTUP_INIT_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+    && rm /tmp/rustup-init \
+    && rustup --version 2>/dev/null | grep -qF "rustup ${RUSTUP_VERSION} " \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
     && components="$(rustc --print sysroot)/lib/rustlib/components" \
     && sort -o "$components" "$components" \

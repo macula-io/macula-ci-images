@@ -7,7 +7,7 @@ Two images, published to `ghcr.io/macula-io`:
 
 | Image | For | Contains |
 |---|---|---|
-| `macula-ci-pq` | CI build and test, **mix** services | Elixir **1.19.6** / OTP **28.4.3** on Debian trixie, OpenSSL 3.5+, hex **2.5.1** (sha512-checked, built for OTP 28), rebar3 **3.27.0** (the one mix uses too), Rust **1.98.1**, all pinned exactly |
+| `macula-ci-pq` | CI build and test, **mix** services | Elixir **1.19.6** / OTP **28.4.3** on Debian trixie, OpenSSL 3.5+, hex **2.5.1** (sha512-checked, built for OTP 28), rebar3 **3.27.0** (the one mix uses too), Rust **1.98.1** (rustup-init sha256-checked), all pinned exactly |
 | `macula-ci-pq:ex118-*` | CI build, test and **release** for mix services that cannot release on Elixir 1.19 yet (macula-realm, macula-portal) | Elixir **1.18.4 compiled on OTP 28.4.3** (hexpm publishes no such pair), Debian trixie, OpenSSL 3.5+, hex **2.5.1**, rebar3 **3.27.0**, Rust **1.98.1**, all pinned. Temporary: Elixir 1.19's `mix release` fails "Unknown application :erts" when a dep lists erts (horus). Goes away when that is fixed upstream |
 | `macula-ci-otp` | CI build and test, **rebar3** services | OTP **28.4.3** (the team standard) on Debian trixie-20260918, OpenSSL 3.5+, rebar3 **3.27.0** (sha256-checked), Rust **1.98.1**, all pinned exactly |
 | `macula-ci-gleam` | CI build, test and **release** for the **Gleam** services (mcl-bookclub-gleam) | **Gleam 1.18.1** (sha256-checked) on OTP **28.4.3**, Debian trixie, OpenSSL 3.5+, rebar3 **3.27.0**, Rust **1.98.1**, all pinned. Tags are `gleam118-*` so a pinned toolchain cannot drift when the image later moves to a newer Gleam |
@@ -193,7 +193,11 @@ immediate and exact.
 **How the base stays current.** Every build resolves the newest dated Debian
 snapshot published for the image's exact pinned toolchain
 (`scripts/newest_dated_base.py`, e.g. `hexpm/erlang:28.4.3-debian-trixie-YYYYMMDD-slim`),
-builds on it, and stamps it on the image as the `io.macula.debian-base` label.
+builds on exactly the digest Docker Hub reports for that tag (the resolver's
+`--pinned` mode, passed to the build as a named context, so a tag pushed again
+cannot change the base unseen), and stamps both on the image: the tag as the
+`io.macula.debian-base` label, the digest-pinned reference as
+`io.macula.base-image`. A tag with no digest is refused.
 The Containerfile's own `DEBIAN_VERSION` is only the default for local builds.
 The daily build is cache-served, so it reproduces the same layers until the
 base moves; a weekly build (Sunday 03:00 UTC) runs uncached. A base that cannot
@@ -205,6 +209,18 @@ at once.
 `scripts/test_newest_dated_base.sh` is its test; no workflow runs it, so run
 it before changing the resolver, as `scripts/test_ci_gate.sh` before changing
 the gate.
+
+**Every download is checked.** Anything a Containerfile fetches besides apt
+packages (which Debian's signatures cover) is downloaded to a file and checked
+against a checksum pinned in the Containerfile, in the same `RUN`: rebar3, hex,
+the Elixir source, Gleam, erlang-rocksdb, and rustup's installer (`rustup-init`
+**1.29.1** from `static.rust-lang.org/rustup/archive`, sha256-checked; it was
+piped from `sh.rustup.rs` unchecked before). `scripts/check_pinned_downloads.py`
+refuses a download piped into a shell or not checked, and build.yml runs it,
+after its own test (`scripts/test_check_pinned_downloads.sh`), before any image
+is built. rustup then downloads the pinned Rust toolchain itself and checks it
+against the hashes in Rust's release manifest, fetched over TLS from the same
+host: pinned by version, not by a checksum of ours.
 
 **The builds are reproducible.** Two uncached builds of the same inputs give
 the same manifest digest: identical layers AND an identical config. So a

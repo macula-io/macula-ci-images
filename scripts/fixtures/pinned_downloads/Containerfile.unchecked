@@ -1,0 +1,2 @@
+FROM x
+RUN curl -fsSL -o /tmp/a.tgz https://example.org/a.tgz && tar xf /tmp/a.tgz

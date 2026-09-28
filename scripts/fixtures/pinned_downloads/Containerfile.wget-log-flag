@@ -1,0 +1,3 @@
+FROM x
+RUN wget -o /tmp/a.tgz https://example.org/a.tgz \
+    && echo "abc  /tmp/a.tgz" | sha256sum -c -

@@ -1,0 +1,2 @@
+FROM x
+RUN curl -fsSL https://example.org/install.sh | sh -s -- -y

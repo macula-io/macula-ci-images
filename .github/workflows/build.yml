@@ -58,7 +58,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Nothing is built or published unless every file a Containerfile downloads
+  # is checked against a checksum pinned in this repository (apt is covered
+  # by Debian's signatures, the bases by digest). The guard's own test runs
+  # first, so a broken guard cannot wave an image through.
+  pinned-downloads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the guard
+        run: bash scripts/test_check_pinned_downloads.sh
+      - name: Every download is checked against a pinned checksum
+        run: python3 scripts/check_pinned_downloads.py
+
   build:
+    needs: pinned-downloads
     # GitHub-hosted on purpose. This repo is public, so hosted minutes are free
     # and unlimited, and the org's self-hosted runners are (correctly) not
     # offered to public repos. Building base images must not depend on the same
@@ -118,18 +133,25 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
+          # The base, its FROM reference, and that reference pinned to the
+          # digest Docker Hub reports: the build takes the pinned image as its
+          # FROM (build-contexts below) and stamps it, so a tag pushed again
+          # can never change what an image was built on unseen.
+          read -r debian from_ref base_image < <(python3 scripts/newest_dated_base.py --pinned "${{ matrix.file }}")
+          [ -n "$base_image" ] || { echo "REFUSED: no pinned base for ${{ matrix.file }}"; exit 1; }
           day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
           [ -n "$day" ] || { echo "REFUSED: no date in the resolved base '$debian'"; exit 1; }
           epoch=$(date -u -d "$day" +%s)
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
+          echo "from_ref=$from_ref" >> "$GITHUB_OUTPUT"
+          echo "base_image=$base_image" >> "$GITHUB_OUTPUT"
           echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
           echo "Building ${{ matrix.image }} (${{ matrix.file }}) on DEBIAN_VERSION=$debian, SOURCE_DATE_EPOCH=$epoch"
           # The resolved base is stamped on the image, so what it was built on
           # is readable from the image itself, not only from this run's log.
           # Every label is a function of the inputs (see image_labels.sh), so
           # the config, and with it the manifest digest, is reproducible too.
-          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian")
+          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian" "io.macula.base-image=$base_image")
           { echo 'labels<<LABELS'; echo "$labels"; echo 'LABELS'; } >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
@@ -169,6 +191,8 @@ jobs:
           # NOT steps.meta.outputs.labels: metadata-action stamps the build
           # time and the commit sha, which move the digest on every build.
           labels: ${{ steps.base.outputs.labels }}
+          build-contexts: |
+            ${{ steps.base.outputs.from_ref }}=docker-image://${{ steps.base.outputs.base_image }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}

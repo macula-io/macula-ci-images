@@ -108,12 +108,19 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          debian=$(python3 scripts/newest_dated_base.py "${{ matrix.file }}")
+          # The base, its FROM reference, and that reference pinned to the
+          # digest Docker Hub reports: the build takes the pinned image as its
+          # FROM (build-contexts below) and stamps it, so a tag pushed again
+          # can never change what an image was built on unseen.
+          read -r debian from_ref base_image < <(python3 scripts/newest_dated_base.py --pinned "${{ matrix.file }}")
+          [ -n "$base_image" ] || { echo "REFUSED: no pinned base for ${{ matrix.file }}"; exit 1; }
           day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
           [ -n "$day" ] || { echo "REFUSED: no date in the resolved base '$debian'"; exit 1; }
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
+          echo "from_ref=$from_ref" >> "$GITHUB_OUTPUT"
+          echo "base_image=$base_image" >> "$GITHUB_OUTPUT"
           epoch=$(date -u -d "$day" +%s)
-          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian")
+          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian" "io.macula.base-image=$base_image")
           {
             echo "epoch=$epoch"
             echo 'labels<<LABELS'
@@ -129,6 +136,8 @@ jobs:
           platforms: linux/amd64
           outputs: type=image,name=localhost:5000/repro:a,push=true,rewrite-timestamp=true
           labels: ${{ steps.base.outputs.labels }}
+          build-contexts: |
+            ${{ steps.base.outputs.from_ref }}=docker-image://${{ steps.base.outputs.base_image }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
@@ -144,6 +153,8 @@ jobs:
           platforms: linux/amd64
           outputs: type=image,name=localhost:5000/repro:b,push=true,rewrite-timestamp=true
           labels: ${{ steps.base.outputs.labels }}
+          build-contexts: |
+            ${{ steps.base.outputs.from_ref }}=docker-image://${{ steps.base.outputs.base_image }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}

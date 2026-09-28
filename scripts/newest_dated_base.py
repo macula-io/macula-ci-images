@@ -12,6 +12,12 @@ template with DEBIAN_VERSION = <distro>-YYYYMMDD-slim, where <distro> comes from
 the Containerfile's own DEBIAN_VERSION default (e.g. trixie).
 
 Prints the DEBIAN_VERSION value to build with (e.g. trixie-20260918-slim).
+With --pinned it prints three space-separated fields instead: that value, the
+FROM reference it gives (every ARG substituted), and the same reference pinned
+to the digest Docker Hub reports for that tag (ref:tag@sha256:...). The build
+uses the pinned one as the FROM image and stamps it on the image, so what an
+image was built on is exact, not just a tag that could be pushed again. A tag
+without a digest is refused.
 Exits non-zero, naming what it looked for, when nothing matches: a base that
 cannot be resolved must stop the build, never fall back to the old one quietly.
 
@@ -22,7 +28,7 @@ the URL and the last error. A 4xx other than 429 is Docker Hub's answer, not a
 hiccup, and fails at once. One read timeout, with no retry, failed the daily
 build on 2026-09-26.
 
-Usage: scripts/newest_dated_base.py Containerfile.ci-otp
+Usage: scripts/newest_dated_base.py [--pinned] Containerfile.ci-otp
   NEWEST_BASE_ATTEMPTS=5 NEWEST_BASE_BACKOFF=2 (seconds, doubling)
   NEWEST_BASE_TIMEOUT=30 (seconds per attempt)
   NEWEST_BASE_HUB=https://hub.docker.com (the tests point it at a fake)
@@ -60,6 +66,7 @@ def template(containerfile):
     for name, value in args.items():
         if name != 'DEBIAN_VERSION':
             ref = ref.replace('${' + name + '}', value)
+    from_template = ref
     ref = re.sub(r'^docker\.io/', '', ref)
     repo, tag_template = ref.split(':', 1)
     if '/' not in repo:
@@ -67,7 +74,7 @@ def template(containerfile):
     if tag_template.count('${DEBIAN_VERSION}') != 1 or '${' in tag_template.replace('${DEBIAN_VERSION}', ''):
         fail(f"{containerfile}: FROM tag {tag_template!r} must contain ${{DEBIAN_VERSION}} once and no other unresolved ARG")
     prefix, suffix = tag_template.split('${DEBIAN_VERSION}')
-    return repo, prefix, suffix, distro
+    return repo, prefix, suffix, distro, from_template
 
 
 def setting(name, default, kind):
@@ -112,23 +119,34 @@ def hub_tags(repo, name_filter):
     while url:
         page = fetch_json(url)
         for result in page.get('results', []):
-            yield result['name']
+            yield result['name'], result.get('digest')
         url = page.get('next')
 
 
 def main():
-    if len(sys.argv) != 2:
-        fail("usage: newest_dated_base.py <Containerfile>")
-    repo, prefix, suffix, distro = template(sys.argv[1])
+    args = sys.argv[1:]
+    pinned = args[:1] == ['--pinned']
+    if pinned:
+        args = args[1:]
+    if len(args) != 1:
+        fail("usage: newest_dated_base.py [--pinned] <Containerfile>")
+    repo, prefix, suffix, distro, from_template = template(args[0])
     want = re.compile(re.escape(prefix) + '(' + re.escape(distro) + r'-(\d{8})-slim)' + re.escape(suffix) + '$')
     found = []
-    for tag in hub_tags(repo, prefix + distro + '-'):
+    for tag, digest in hub_tags(repo, prefix + distro + '-'):
         m = want.match(tag)
         if m:
-            found.append((m.group(2), m.group(1)))
+            found.append((m.group(2), m.group(1), digest))
     if not found:
         fail(f"no {repo}:{prefix}{distro}-YYYYMMDD-slim{suffix} tag on Docker Hub")
-    print(max(found)[1])
+    _day, debian, digest = max(found)
+    if not pinned:
+        print(debian)
+        return
+    if not (isinstance(digest, str) and re.fullmatch(r'sha256:[0-9a-f]{64}', digest)):
+        fail(f"{repo}:{prefix}{debian}{suffix} has no digest on Docker Hub ({digest!r}); refusing to build on a tag alone")
+    from_ref = from_template.replace('${DEBIAN_VERSION}', debian)
+    print(f"{debian} {from_ref} {from_ref}@{digest}")
 
 
 if __name__ == '__main__':

@@ -25,7 +25,8 @@ fail() { echo "REFUSED: $*"; exit 1; }
 printf 'ARG DEBIAN_VERSION=trixie-20260101-slim\nFROM docker.io/library/debian:${DEBIAN_VERSION}\n' > "$WORK/Containerfile"
 
 # serve <mode> <failures>: the first <failures> requests fail as <mode>
-# (503, 404, hang, short or badjson); after that the tag API answers with two dated tags.
+# (503, 404, hang, short or badjson); after that the tag API answers with two
+# dated tags, each with a digest (mode nodigest: the newest has none).
 # Every request is counted in $WORK/hits.
 serve() {
     [ -z "$SERVER" ] || kill "$SERVER" 2>/dev/null
@@ -60,8 +61,12 @@ class Hub(http.server.BaseHTTPRequestHandler):
             self.send_response(int(mode))
             self.end_headers()
             return
-        body = json.dumps({"results": [{"name": "trixie-20260918-slim"},
-                                       {"name": "trixie-20260901-slim"}], "next": None}).encode()
+        newest = {"name": "trixie-20260918-slim"}
+        if mode != "nodigest":
+            newest["digest"] = "sha256:" + "ab" * 32
+        body = json.dumps({"results": [newest,
+                                       {"name": "trixie-20260901-slim", "digest": "sha256:" + "cd" * 32}],
+                           "next": None}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -132,4 +137,18 @@ for v in 0 -1 x ""; do
     grep -q "REFUSED: NEWEST_BASE_ATTEMPTS='$v'" <<<"$OUT" || fail "the refusal did not name NEWEST_BASE_ATTEMPTS='$v': $OUT"
 done
 
-echo "OK: newest_dated_base.py retries transient failures and fails loudly when they persist"
+# 6. --pinned: the base, its FROM reference, and that reference pinned to the
+#    digest Docker Hub reports for exactly the newest tag.
+serve 503 0
+OUT=$(python3 "$RESOLVER" --pinned "$WORK/Containerfile" 2>&1) || fail "--pinned did not resolve: $OUT"
+WANT="trixie-20260918-slim docker.io/library/debian:trixie-20260918-slim docker.io/library/debian:trixie-20260918-slim@sha256:$(printf 'ab%.0s' $(seq 32))"
+[ "$OUT" = "$WANT" ] || fail "--pinned printed '$OUT', wanted '$WANT'"
+
+# 7. --pinned on a tag Docker Hub reports no digest for: refused, never a
+#    build on the tag alone.
+serve nodigest 0
+OUT=$(python3 "$RESOLVER" --pinned "$WORK/Containerfile" 2>&1) && fail "--pinned without a digest resolved: $OUT"
+grep -q "REFUSED: .*has no digest" <<<"$OUT" || fail "the missing digest was not named: $OUT"
+OUT=$(python3 "$RESOLVER" "$WORK/Containerfile" 2>&1) || fail "plain mode needs no digest, but refused: $OUT"
+
+echo "OK: newest_dated_base.py retries transient failures, fails loudly when they persist, and pins the base by digest"

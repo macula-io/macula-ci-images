@@ -1,0 +1,7 @@
+FROM x
+RUN curl -fsSL -o /tmp/a.tgz https://example.org/a.tgz \
+    && echo "abc123  /tmp/a.tgz" | sha256sum -c - \
+    && tar xf /tmp/a.tgz
+RUN wget -q -o /tmp/log -O /tmp/b.bin https://example.org/b \
+    && echo "def456  /tmp/b.bin" | sha512sum -c -
+RUN apt-get update && apt-get install -y curl
