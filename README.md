@@ -221,7 +221,10 @@ remove what records a time or an order: apt, dpkg and ldconfig logs and caches,
 hex's `cache.ets`, mix's `/tmp` lock and pubsub files; they sort rustup's
 `components` list (downloaded concurrently, listed as each lands) and check
 rustup still reads it; and Elixir's own build in ex118 is compiled
-`deterministic` with the epoch as its build date.
+`deterministic` with the epoch as its build date. BuildKit itself is pinned
+by version and digest in both workflows, because its exporter decides the
+compressed blobs: a BuildKit bump can move every digest with nothing inside
+changing, so it is a deliberate change, never a silent one.
 `.github/workflows/reproducibility.yml` proves it: every image, the three
 rocksdb ones included, built twice uncached with the labels build.yml
 publishes with, pushed to a registry that lives only inside the job, and the
