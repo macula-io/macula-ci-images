@@ -216,7 +216,12 @@ against a checksum pinned in the Containerfile, in the same `RUN`: rebar3, hex,
 the Elixir source, Gleam, erlang-rocksdb, and rustup's installer (`rustup-init`
 **1.29.1** from `static.rust-lang.org/rustup/archive`, sha256-checked; it was
 piped from `sh.rustup.rs` unchecked before). `scripts/check_pinned_downloads.py`
-refuses a download piped into a shell or not checked, and build.yml runs it,
+refuses a download piped into anything or made inside `$(...)`, and requires
+the very next command in an `&&` chain to be `echo "SUM  FILE" | sha256sum -c -`
+(or sha512sum) for that file, with SUM a literal digest or a bare `${ARG}`
+pinned in the Containerfile; a RUN that downloads may not use `||`, `;`, `&`
+or a subshell, so a failed check always fails the build, and `sh -c` strings
+are checked the same way. build.yml runs it,
 after its own test (`scripts/test_check_pinned_downloads.sh`), before any image
 is built. rustup then downloads the pinned Rust toolchain itself and checks it
 against the hashes in Rust's release manifest, fetched over TLS from the same

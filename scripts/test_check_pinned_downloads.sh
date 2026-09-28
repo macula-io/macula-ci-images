@@ -2,10 +2,17 @@
 # Does check_pinned_downloads.py pass verified downloads and refuse the rest?
 #
 # Fixtures in scripts/fixtures/pinned_downloads/:
-#   Containerfile.verified        curl -o and wget -O, each checked by sha*sum -c; apt: passes
-#   Containerfile.piped           curl ... | sh: refused as piped into a shell
-#   Containerfile.unchecked       curl -o FILE, FILE never checked: refused
-#   Containerfile.wget-log-flag   wget -o is its LOG, not the download: refused
+#   Containerfile.verified          curl -o with a literal sha256, wget -O with a
+#                                   ${ARG} sha512, each checked by the next command;
+#                                   a RUN without a download may use ||: passes
+#   Containerfile.piped             curl ... | sh
+#   Containerfile.unchecked         curl -o FILE, FILE never checked
+#   Containerfile.wget-log-flag     wget -o is its LOG, not the download
+#   Containerfile.fetched-sum       the sum itself is fetched: echo "$(curl ...)  FILE"
+#   Containerfile.short-sum         the sum is not a full digest or an ${ARG}
+#   Containerfile.run-before-check  the file runs before it is checked
+#   Containerfile.ignored-check     ( check || true ): a failed check is ignored
+#   Containerfile.shell-c           bash -c "curl ... | sh": a shell's -c string
 #
 # Usage: scripts/test_check_pinned_downloads.sh
 set -uo pipefail
@@ -25,8 +32,14 @@ refused() {
     grep -qF "$reason" <<<"$OUT" || fail "$file was refused without naming '$reason': $OUT"
 }
 
-refused Containerfile.piped "piped into a shell"
+refused Containerfile.piped "curl piped into another command"
 refused Containerfile.unchecked "/tmp/a.tgz is downloaded but not checked"
 refused Containerfile.wget-log-flag "wget without -O FILE"
+refused Containerfile.fetched-sum "a download inside a command substitution"
+refused Containerfile.fetched-sum "is not pinned"
+refused Containerfile.short-sum "the sum 'abc' is not pinned"
+refused Containerfile.run-before-check "the command after the download is not sha256sum/sha512sum -c"
+refused Containerfile.ignored-check "must be one && chain"
+refused Containerfile.shell-c "curl piped into another command"
 
 echo "OK: check_pinned_downloads.py passes verified downloads and names every unverified one"

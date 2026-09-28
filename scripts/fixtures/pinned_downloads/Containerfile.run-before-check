@@ -1,0 +1,2 @@
+FROM x
+RUN curl -fsSL -o /tmp/i https://e.org/i && sh /tmp/i && echo "abc  /tmp/i" | sha256sum -c -
