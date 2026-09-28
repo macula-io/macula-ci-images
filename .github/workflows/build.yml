@@ -21,6 +21,7 @@ on:
       - 'scripts/test_newest_dated_base.sh'
       - 'scripts/compare_image_layers.sh'
       - 'scripts/compare_pushed_images.sh'
+      - 'scripts/check_workflow_matrices_agree.py'
       - 'scripts/test_compare_image_layers.sh'
       # The signing workflow and its self-test build no base image.
       - '.github/workflows/attest-image.yml'

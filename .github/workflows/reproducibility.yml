@@ -46,6 +46,7 @@ on:
       - 'scripts/image_labels.sh'
       - 'scripts/compare_image_layers.sh'
       - 'scripts/compare_pushed_images.sh'
+      - 'scripts/check_workflow_matrices_agree.py'
       - 'scripts/test_compare_image_layers.sh'
   schedule:
     # Sunday 05:00 UTC, after build.yml's weekly uncached build (03:00).
@@ -57,11 +58,14 @@ permissions: {}
 jobs:
   # The comparator's own test, so a change to it is proven before it judges
   # an image. Podman is on the hosted runner; see the test for why podman.
+  # And the matrices below must name what build.yml publishes, name for name.
   comparator:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: The check builds exactly what build.yml publishes
+        run: python3 scripts/check_workflow_matrices_agree.py
       - name: Test compare_image_layers.sh
         run: bash scripts/test_compare_image_layers.sh
 
@@ -83,7 +87,9 @@ jobs:
             file: Containerfile.ci-otp
           - image: macula-ci-pq
             file: Containerfile.ci-pq
-          - image: macula-ci-pq-ex118
+          # Published as macula-ci-pq (ex118- tags), and the name is in the
+          # digest, so it is checked under that name too.
+          - image: macula-ci-pq
             file: Containerfile.ci-pq-ex118
           - image: macula-ci-gleam
             file: Containerfile.ci-gleam

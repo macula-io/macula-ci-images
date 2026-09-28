@@ -226,7 +226,9 @@ by version and digest in both workflows, because its exporter decides the
 compressed blobs: a BuildKit bump can move every digest with nothing inside
 changing, so it is a deliberate change, never a silent one.
 `.github/workflows/reproducibility.yml` proves it: every image, the three
-rocksdb ones included, built twice uncached with the labels build.yml
+rocksdb ones included, under the names build.yml publishes them by (the name
+is in the digest; `scripts/check_workflow_matrices_agree.py` refuses a
+matrix that drifts), built twice uncached with the labels build.yml
 publishes with, pushed to a registry that lives only inside the job, and the
 two manifest digests compared (`scripts/compare_pushed_images.sh`). A mismatch
 names its cause: the files that differ, or the config fields and history
