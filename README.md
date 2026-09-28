@@ -124,6 +124,11 @@ the slice itself and refuses a caller's `--cgroup-parent`, so the gate refuses
 the two together. Either plain podman with `GATE_CGROUP_PARENT`, or the shim
 as `ENGINE` with `CI_RUNNER_CGROUP_PARENT` alone.
 
+**A reserved host refuses the gate.** While `~/.host00-slot` (`GATE_SLOT_FILE`) exists,
+the gate refuses to start unless `GATE_SLOT_OWNER` equals its `owner=` line, and names
+the owner. The owner is whatever the caller says it is: this guards against a gate
+started by mistake during someone's measurement slot, not against intent.
+
 **Before any release tag, gate with `GATE_TEST_CPUS=runner`.** After the job
 passes, it restarts the same container with its cap lowered to half a CPU and
 re-runs only the test steps (`rebar3 eunit`/`ct`, `mix test`, `cargo test`,
@@ -175,7 +180,7 @@ attest:
   with:
     image: ghcr.io/<org>/<name>
     digest: ${{ needs.build-and-push.outputs.digest }}
-    runs-on: '["self-hosted","host00"]'   # private repos; public ones omit it (ubuntu-latest)
+    runs-on: '["self-hosted","pq"]'   # private repos (msi00; host00 takes no CI); public ones omit it (ubuntu-latest)
 ```
 
 Call it by **full commit sha**, never `@main`: the signing identity is this file at the
@@ -183,6 +188,14 @@ ref the caller names. What a verifier checks: issuer
 `https://token.actions.githubusercontent.com`, identity matching
 `^https://github\.com/macula-io/macula-ci-images/\.github/workflows/attest-image\.yml@`,
 and the certificate's GitHub workflow repository equal to the calling repository.
+**Verify with cosign v3.** The workflow signs and attests with cosign v3.1.3, in v3's
+bundle format; a cosign v2 verifier (v2.5.3 tried) reports "no signatures found" and
+"no matching attestations" on a correctly signed image. With v3 (for example
+`ghcr.io/sigstore/cosign/cosign@sha256:9e5c2f2edc34351160407ca3416c61855bdf9403c3c5936e0f0be7fc261611b8`),
+the flags are those of the workflow's own verify step: `--certificate-oidc-issuer`,
+`--certificate-identity-regexp`, `--certificate-github-workflow-repository <org>/<repo>` and
+`--certificate-github-workflow-sha <commit>`, for `verify`, then `verify-attestation`
+with `--type spdxjson` and with `--type slsaprovenance1`.
 
 `attest-image-selftest.yml` proves any change to it on a throwaway one-file image
 (`ghcr.io/macula-io/attest-image-selftest`) before a service calls it.
