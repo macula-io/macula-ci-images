@@ -11,14 +11,18 @@ unpinned and unchecked, until this check existed.
 For every RUN instruction (continuation lines joined, tokenised as a shell
 would, and the string of every `sh -c` / `bash -c` checked the same way):
 
+  - curl or wget (by basename, so /usr/bin/curl counts) anywhere in a RUN
+    makes it a downloading RUN, and must be the first word of its command:
+    `env curl`, `timeout 60 wget`, `bash < <(curl ...)` are REFUSED;
   - a download (curl, wget) piped into anything is REFUSED;
   - a download inside a command substitution ($(...) or backticks) is REFUSED;
   - a download must write to a file (curl -o/--output, wget -O/--output-document);
   - the command right after it, joined by &&, must be exactly
         echo "SUM  FILE" | sha256sum -c -     (or sha512sum)
     for that FILE, where SUM is a literal hex digest of the right length or a
-    bare ${ARG} (declared in the Containerfile, so pinned there): nothing may
-    run the file first, and the sum cannot be fetched;
+    bare ${ARG} declared with a default in the Containerfile (ARG NAME=value),
+    so it is pinned there: nothing may run the file first, and the sum cannot
+    be fetched;
   - a RUN that downloads is one && chain: no ||, ;, & or ( ), so a failed
     check always fails the build and can never be skipped or ignored.
 
@@ -29,6 +33,7 @@ Usage: scripts/check_pinned_downloads.py [Containerfile ...]
   (default: every Containerfile.* in the current directory)
 """
 import glob
+import os
 import re
 import shlex
 import sys
@@ -41,6 +46,9 @@ DIGEST_LEN = {"sha256sum": 64, "sha512sum": 128}
 ARG_REF = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 OPERATORS = {"&&", "||", ";", "&", "|"}
 FORBIDDEN_IN_DOWNLOAD_RUN = {"||", ";", "&", "(", ")"}
+# Commands whose arguments name packages, not fetches: `apt-get install curl`
+# installs curl, Debian's signatures cover what it downloads.
+PACKAGE_MANAGERS = {"apt-get", "apt"}
 
 
 def run_instructions(path):
@@ -97,7 +105,18 @@ def output_file(words):
     return None
 
 
-def is_check_of(pipeline, target):
+def fetcher(word):
+    """curl or wget, however it is spelled (a full path counts)."""
+    base = os.path.basename(word)
+    return base if base in FETCHERS else None
+
+
+def pinned_args(path):
+    """ARG names declared with a default: the values pinned in this file."""
+    return set(re.findall(r'^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=\S', open(path).read(), re.M))
+
+
+def is_check_of(pipeline, target, pinned):
     """Is this pipeline exactly `echo "SUM  target" | shaNsum -c -` with a pinned SUM?"""
     if not any(c[0] in DIGEST_LEN for c in pipeline):
         return False, f"{target} is downloaded but not checked by the next command (the command after the download is not sha256sum/sha512sum -c)"
@@ -115,10 +134,12 @@ def is_check_of(pipeline, target):
     literal = re.fullmatch(r"[0-9a-f]{%d}" % DIGEST_LEN[checker[0]], digest)
     if not (literal or ARG_REF.match(digest)):
         return False, f"the sum '{digest}' is not pinned (a literal {DIGEST_LEN[checker[0]]}-hex digest or a bare ${{ARG}})"
+    if not literal and digest[2:-1] not in pinned:
+        return False, f"the sum {digest} names no ARG declared with a default in this Containerfile"
     return True, ""
 
 
-def problems_in_text(path, line, text, found):
+def problems_in_text(path, line, text, found, pinned):
     try:
         toks = tokens(text)
     except ValueError as exc:
@@ -128,26 +149,37 @@ def problems_in_text(path, line, text, found):
         if any(f in tok for f in FETCHERS) and ("$(" in tok or "`" in tok):
             found.append(f"{path}:{line}: a download inside a command substitution")
     links = chain(toks)
-    downloads = False
+    downloads = any(
+        fetcher(w)
+        for pipeline, _op in links
+        for words in pipeline
+        if os.path.basename(words[0]) not in PACKAGE_MANAGERS
+        for w in words
+    )
     for n, (pipeline, op) in enumerate(links):
         for words in pipeline:
-            if words[0] in SHELLS and "-c" in words[:-1]:
-                problems_in_text(path, line, words[words.index("-c") + 1], found)
+            if os.path.basename(words[0]) in PACKAGE_MANAGERS:
+                continue
+            if os.path.basename(words[0]) in SHELLS and "-c" in words[:-1]:
+                problems_in_text(path, line, words[words.index("-c") + 1], found, pinned)
+            for w in words[1:]:
+                if fetcher(w):
+                    found.append(f"{path}:{line}: {w} is a download not at the head of its command (a wrapper, a path argument or a process substitution)")
         first = pipeline[0]
-        if not any(c[0] in FETCHERS for c in pipeline):
+        if not any(fetcher(c[0]) for c in pipeline):
             continue
-        downloads = True
-        if first[0] not in FETCHERS or len(pipeline) > 1:
-            found.append(f"{path}:{line}: {'/'.join(sorted({c[0] for c in pipeline if c[0] in FETCHERS}))} piped into another command (download it to a file, check a pinned sha256, then use it)")
+        if not fetcher(first[0]) or len(pipeline) > 1:
+            found.append(f"{path}:{line}: {'/'.join(sorted({fetcher(c[0]) for c in pipeline if fetcher(c[0])}))} piped into another command (download it to a file, check a pinned sha256, then use it)")
             continue
-        target = output_file(first)
+        name = fetcher(first[0])
+        target = output_file([name] + first[1:])
         if target is None:
-            found.append(f"{path}:{line}: {first[0]} without {OUTPUT_FLAGS[first[0]][0]} FILE, so nothing can be checked")
+            found.append(f"{path}:{line}: {name} without {OUTPUT_FLAGS[name][0]} FILE, so nothing can be checked")
             continue
         if op != "&&" or n + 1 >= len(links):
             found.append(f"{path}:{line}: {target} is downloaded but not checked by the next command in an && chain")
             continue
-        ok, why = is_check_of(links[n + 1][0], target)
+        ok, why = is_check_of(links[n + 1][0], target, pinned)
         if not ok:
             found.append(f"{path}:{line}: {target}: {why}")
     if downloads:
@@ -158,8 +190,9 @@ def problems_in_text(path, line, text, found):
 
 def problems_in(path):
     found = []
+    pinned = pinned_args(path)
     for line, text in run_instructions(path):
-        problems_in_text(path, line, text, found)
+        problems_in_text(path, line, text, found, pinned)
     return found
 
 

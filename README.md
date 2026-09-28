@@ -219,7 +219,8 @@ piped from `sh.rustup.rs` unchecked before). `scripts/check_pinned_downloads.py`
 refuses a download piped into anything or made inside `$(...)`, and requires
 the very next command in an `&&` chain to be `echo "SUM  FILE" | sha256sum -c -`
 (or sha512sum) for that file, with SUM a literal digest or a bare `${ARG}`
-pinned in the Containerfile; a RUN that downloads may not use `||`, `;`, `&`
+declared with a default in the Containerfile; curl and wget must head their
+command (no `env curl`, `/usr/bin/curl | sh` or `bash < <(curl ...)`); a RUN that downloads may not use `||`, `;`, `&`
 or a subshell, so a failed check always fails the build, and `sh -c` strings
 are checked the same way. build.yml runs it,
 after its own test (`scripts/test_check_pinned_downloads.sh`), before any image

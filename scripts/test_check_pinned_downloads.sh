@@ -13,6 +13,9 @@
 #   Containerfile.run-before-check  the file runs before it is checked
 #   Containerfile.ignored-check     ( check || true ): a failed check is ignored
 #   Containerfile.shell-c           bash -c "curl ... | sh": a shell's -c string
+#   Containerfile.wrapped           env curl, timeout 60 wget, /usr/bin/curl, bash < <(curl ...)
+#   Containerfile.undeclared-arg    the sum is ${NOPE}, declared nowhere
+# (the verified fixture also installs curl with apt-get, which is not a fetch)
 #
 # Usage: scripts/test_check_pinned_downloads.sh
 set -uo pipefail
@@ -41,5 +44,10 @@ refused Containerfile.short-sum "the sum 'abc' is not pinned"
 refused Containerfile.run-before-check "the command after the download is not sha256sum/sha512sum -c"
 refused Containerfile.ignored-check "must be one && chain"
 refused Containerfile.shell-c "curl piped into another command"
+refused Containerfile.wrapped "Containerfile.wrapped:2: curl is a download not at the head of its command"
+refused Containerfile.wrapped "Containerfile.wrapped:3: wget is a download not at the head of its command"
+refused Containerfile.wrapped "Containerfile.wrapped:4: curl piped into another command"
+refused Containerfile.wrapped "Containerfile.wrapped:5: curl is a download not at the head of its command"
+refused Containerfile.undeclared-arg "names no ARG declared with a default"
 
 echo "OK: check_pinned_downloads.py passes verified downloads and names every unverified one"

