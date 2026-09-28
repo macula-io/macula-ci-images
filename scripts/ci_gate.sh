@@ -68,13 +68,16 @@
 # Uses podman (on host00, `docker' is rootless podman's compat API, which
 # gives containers pids.max=1). Override with ENGINE=docker elsewhere.
 #
-# CI_RUNNER_CGROUP_PARENT=<name>.slice puts every container the gate creates
-# under that systemd slice (--cgroup-parent), so the gate runs under the same
-# ceiling as the CI runner. On msi00 that is ci-runners.slice: without it, the
-# gate container sits in its own scope under user.slice, outside the runners'
-# memory ceiling, even when the gate is launched from inside the slice, and a
-# job CI would lose to the ceiling passes here. Anything but one slice name is
-# refused.
+# GATE_CGROUP_PARENT=<name>.slice puts every container the gate creates under
+# that systemd slice (--cgroup-parent), so the gate runs under the same ceiling
+# as the CI runner. On msi00 that is ci-runners.slice: without it, the gate
+# container sits in its own scope under user.slice, outside the runners' memory
+# ceiling, even when the gate is launched from inside the slice, and a job CI
+# would lose to the ceiling passes here. Anything but one slice name is refused.
+# It is the gate's own variable, not the runner's CI_RUNNER_CGROUP_PARENT: that
+# one tells Terra's docker shim to set the slice itself, and the shim refuses a
+# caller's --cgroup-parent. So the two are refused together: gate with plain
+# podman and GATE_CGROUP_PARENT, or through the shim with its variable.
 # Needs git, python3 with PyYAML.
 #
 # Usage: scripts/ci_gate.sh <repo> <sha> [workflow file, default lint.yml] [job, default check]
@@ -82,7 +85,7 @@
 #   GATE_CPUS=4 GATE_MEMORY=8g ENGINE=podman GATE_TEST_CPUS=runner|0.5
 #   GATE_LOG_DIR=~/.cache/ci-gate GATE_LOG_KEEP=20
 #   GATE_MATRIX=check=eunit GATE_DRY_RUN=1
-#   CI_RUNNER_CGROUP_PARENT=ci-runners.slice (msi00)
+#   GATE_CGROUP_PARENT=ci-runners.slice (msi00, with plain podman)
 #   e.g. GATE_TEST_CPUS=runner scripts/ci_gate.sh ~/work/github.com/macula-io/macula <sha> test.yml test
 set -euo pipefail
 
@@ -132,16 +135,20 @@ if [ -n "${GATE_DRY_RUN+set}" ] && [ "$GATE_DRY_RUN" != 1 ]; then
     exit 2
 fi
 
-# The runner's slice, checked before anything runs. Set but empty is a
+# The runners' slice, checked before anything runs. Set but empty is a
 # mistake, not off; a path, a dotfile name or anything not ending in .slice is
 # not a slice name.
 CGROUP_ARGS=()
-if [ -n "${CI_RUNNER_CGROUP_PARENT+set}" ]; then
-    if ! [[ "$CI_RUNNER_CGROUP_PARENT" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*\.slice$ ]]; then
-        echo "REFUSED: CI_RUNNER_CGROUP_PARENT='$CI_RUNNER_CGROUP_PARENT' is not one systemd slice name (e.g. ci-runners.slice)"
+if [ -n "${GATE_CGROUP_PARENT+set}" ]; then
+    if [ -n "${CI_RUNNER_CGROUP_PARENT+set}" ]; then
+        echo "REFUSED: GATE_CGROUP_PARENT and CI_RUNNER_CGROUP_PARENT are both set; the docker shim refuses the gate's --cgroup-parent when its own variable is set. Gate with plain podman and GATE_CGROUP_PARENT, or through the shim with CI_RUNNER_CGROUP_PARENT alone"
         exit 2
     fi
-    CGROUP_ARGS=(--cgroup-parent="$CI_RUNNER_CGROUP_PARENT")
+    if ! [[ "$GATE_CGROUP_PARENT" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*\.slice$ ]]; then
+        echo "REFUSED: GATE_CGROUP_PARENT='$GATE_CGROUP_PARENT' is not one systemd slice name (e.g. ci-runners.slice)"
+        exit 2
+    fi
+    CGROUP_ARGS=(--cgroup-parent="$GATE_CGROUP_PARENT")
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gate.XXXXXX")"

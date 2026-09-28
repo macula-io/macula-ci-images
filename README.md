@@ -114,12 +114,15 @@ anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 
 **On a box whose CI runners live under a slice, gate under the same slice.**
-`CI_RUNNER_CGROUP_PARENT=ci-runners.slice` (msi00) puts the gate's container
-under that slice (`--cgroup-parent`), so it gets the same memory ceiling as the
-runner; without it the container sits in its own scope under `user.slice`,
-outside the ceiling, even when the gate is launched from inside the slice.
-Anything but one slice name is refused. On msi00 use Terra's docker shim as
-`ENGINE` too, as the runners do.
+`GATE_CGROUP_PARENT=ci-runners.slice` (msi00, with plain podman as `ENGINE`)
+puts the gate's container under that slice (`--cgroup-parent`), so it gets the
+same memory ceiling as the runner; without it the container sits in its own
+scope under `user.slice`, outside the ceiling, even when the gate is launched
+from inside the slice. Anything but one slice name is refused. It is the
+gate's own variable: Terra's docker shim reads `CI_RUNNER_CGROUP_PARENT`, sets
+the slice itself and refuses a caller's `--cgroup-parent`, so the gate refuses
+the two together. Either plain podman with `GATE_CGROUP_PARENT`, or the shim
+as `ENGINE` with `CI_RUNNER_CGROUP_PARENT` alone.
 
 **Before any release tag, gate with `GATE_TEST_CPUS=runner`.** After the job
 passes, it restarts the same container with its cap lowered to half a CPU and

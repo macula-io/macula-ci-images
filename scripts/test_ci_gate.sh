@@ -519,13 +519,19 @@ for k in a b c; do
 done
 [ "$(grep -c "^eunit-ran cpu.max=50000 100000" <<<"$OUT")" -eq 3 ] || fail "not every combination ran its throttled pass: $OUT"
 
-# 27. CI_RUNNER_CGROUP_PARENT: anything but one slice name is refused before
-#     anything runs, with nothing left behind.
+# 27. GATE_CGROUP_PARENT: anything but one slice name is refused before
+#     anything runs, with nothing left behind; so is setting it together with
+#     the docker shim's CI_RUNNER_CGROUP_PARENT, which would make the shim
+#     refuse the gate's run.
 for bad in "" "ci-runners" "a/b.slice" "../x.slice" ".hidden.slice" "two words.slice"; do
-    OUT=$(CI_RUNNER_CGROUP_PARENT="$bad" "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) && fail "CI_RUNNER_CGROUP_PARENT='$bad' was accepted: $OUT"
-    grep -qF "REFUSED: CI_RUNNER_CGROUP_PARENT='$bad' is not one systemd slice name" <<<"$OUT" \
-        || fail "CI_RUNNER_CGROUP_PARENT='$bad' was not refused by name: $OUT"
+    OUT=$(GATE_CGROUP_PARENT="$bad" "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) && fail "GATE_CGROUP_PARENT='$bad' was accepted: $OUT"
+    grep -qF "REFUSED: GATE_CGROUP_PARENT='$bad' is not one systemd slice name" <<<"$OUT" \
+        || fail "GATE_CGROUP_PARENT='$bad' was not refused by name: $OUT"
 done
+OUT=$(GATE_CGROUP_PARENT=ci-runners.slice CI_RUNNER_CGROUP_PARENT=ci-runners.slice "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    && fail "the gate's and the shim's slice variables together were accepted: $OUT"
+grep -qF "REFUSED: GATE_CGROUP_PARENT and CI_RUNNER_CGROUP_PARENT are both set" <<<"$OUT" \
+    || fail "the two slice variables together were not refused by name: $OUT"
 [ "$(leftovers)" -eq 0 ] || fail "a refused slice name left a workspace behind"
 
 # 28. With a slice name, the gate creates its container under that slice: the
@@ -554,7 +560,7 @@ SH
     chmod +x "$WORK/engine"
     SHA=$(repo slow '      - run: sleep 3')
     export ENGINE_CGROUP_LOG="$WORK/cgroups"
-    OUT=$(ENGINE="$WORK/engine" CI_RUNNER_CGROUP_PARENT="$SLICE" "$GATE" "$WORK/slow" "$SHA" 2>&1) || fail "a gate run under $SLICE failed: $OUT"
+    OUT=$(ENGINE="$WORK/engine" GATE_CGROUP_PARENT="$SLICE" "$GATE" "$WORK/slow" "$SHA" 2>&1) || fail "a gate run under $SLICE failed: $OUT"
     wait
     grep -q "/$SLICE/libpod-" "$ENGINE_CGROUP_LOG" 2>/dev/null \
         || fail "the gate's container did not sit under $SLICE: $(cat "$ENGINE_CGROUP_LOG" 2>/dev/null)"
