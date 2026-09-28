@@ -113,6 +113,14 @@ anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;
 `GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
 `/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
 
+**On a box whose CI runners live under a slice, gate under the same slice.**
+`CI_RUNNER_CGROUP_PARENT=ci-runners.slice` (msi00) puts the gate's container
+under that slice (`--cgroup-parent`), so it gets the same memory ceiling as the
+runner; without it the container sits in its own scope under `user.slice`,
+outside the ceiling, even when the gate is launched from inside the slice.
+Anything but one slice name is refused. On msi00 use Terra's docker shim as
+`ENGINE` too, as the runners do.
+
 **Before any release tag, gate with `GATE_TEST_CPUS=runner`.** After the job
 passes, it restarts the same container with its cap lowered to half a CPU and
 re-runs only the test steps (`rebar3 eunit`/`ct`, `mix test`, `cargo test`,

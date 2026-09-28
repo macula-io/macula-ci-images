@@ -519,4 +519,48 @@ for k in a b c; do
 done
 [ "$(grep -c "^eunit-ran cpu.max=50000 100000" <<<"$OUT")" -eq 3 ] || fail "not every combination ran its throttled pass: $OUT"
 
+# 27. CI_RUNNER_CGROUP_PARENT: anything but one slice name is refused before
+#     anything runs, with nothing left behind.
+for bad in "" "ci-runners" "a/b.slice" "../x.slice" ".hidden.slice" "two words.slice"; do
+    OUT=$(CI_RUNNER_CGROUP_PARENT="$bad" "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) && fail "CI_RUNNER_CGROUP_PARENT='$bad' was accepted: $OUT"
+    grep -qF "REFUSED: CI_RUNNER_CGROUP_PARENT='$bad' is not one systemd slice name" <<<"$OUT" \
+        || fail "CI_RUNNER_CGROUP_PARENT='$bad' was not refused by name: $OUT"
+done
+[ "$(leftovers)" -eq 0 ] || fail "a refused slice name left a workspace behind"
+
+# 28. With a slice name, the gate creates its container under that slice: the
+#     engine is wrapped to record each container's host-side cgroup (inside,
+#     the container has its own cgroup namespace and sees only "/"). Skipped,
+#     by name, where this machine cannot place a container in a slice.
+SLICE="ci-gate-test-$$.slice"
+PROBE=$(podman run --rm -d --cgroup-parent="$SLICE" "$IMAGE" sleep 5 2>&1) && \
+    PROBE_CG=$(cat "/proc/$(podman inspect --format '{{.State.Pid}}' "$PROBE")/cgroup" 2>&1)
+podman rm -f "$PROBE" >/dev/null 2>&1 || true
+if [[ "${PROBE_CG:-}" == *"/$SLICE/"* ]]; then
+    cat > "$WORK/engine" <<'SH'
+#!/usr/bin/env bash
+# Records where each container the gate runs sits, then behaves as podman.
+if [ "$1" = run ]; then
+    name=""; prev=""
+    for a in "$@"; do [ "$prev" = --name ] && name="$a"; prev="$a"; done
+    ( for _ in $(seq 100); do
+          pid=$(podman inspect --format '{{.State.Pid}}' "$name" 2>/dev/null)
+          [ -n "$pid" ] && [ "$pid" != 0 ] && { cat "/proc/$pid/cgroup" >> "$ENGINE_CGROUP_LOG"; exit; }
+          sleep 0.1
+      done ) &
+fi
+exec podman "$@"
+SH
+    chmod +x "$WORK/engine"
+    SHA=$(repo slow '      - run: sleep 3')
+    export ENGINE_CGROUP_LOG="$WORK/cgroups"
+    OUT=$(ENGINE="$WORK/engine" CI_RUNNER_CGROUP_PARENT="$SLICE" "$GATE" "$WORK/slow" "$SHA" 2>&1) || fail "a gate run under $SLICE failed: $OUT"
+    wait
+    grep -q "/$SLICE/libpod-" "$ENGINE_CGROUP_LOG" 2>/dev/null \
+        || fail "the gate's container did not sit under $SLICE: $(cat "$ENGINE_CGROUP_LOG" 2>/dev/null)"
+    unset ENGINE_CGROUP_LOG
+else
+    echo "SKIPPED 28: this machine cannot place a container under a slice (probe: ${PROBE_CG:-$PROBE})"
+fi
+
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"
