@@ -20,6 +20,8 @@ mkdir -p "$TMPDIR"
 # Where a failed run's logs are kept: outside TMPDIR, so leftovers() still
 # counts only workspaces, and inside WORK, so the test leaves nothing either.
 export GATE_LOG_DIR="$WORK/kept"
+# The host's real slot file (host00's ~/.host00-slot) must refuse this suite
+# there, not be bypassed: it starts containers. Cases 29 and 30 use their own.
 
 fail() { echo "REFUSED: $*"; exit 1; }
 
@@ -568,5 +570,26 @@ SH
 else
     echo "SKIPPED 28: this machine cannot place a container under a slice (probe: ${PROBE_CG:-$PROBE})"
 fi
+
+# 29. A reserved host: while the slot file exists the gate refuses anyone but
+#     its owner, naming the owner, before anything runs; a slot file with no
+#     owner is refused too. The owner is allowed (a dry run, so nothing starts).
+printf 'owner=Pluto\npurpose=a measurement\n' > "$WORK/slot"
+OUT=$(GATE_SLOT_FILE="$WORK/slot" GATE_DRY_RUN=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    && fail "a reserved host let a non-owner gate: $OUT"
+grep -qF "REFUSED: this host is reserved for Pluto (a measurement; $WORK/slot); gate on msi00 or GitHub CI" <<<"$OUT" \
+    || fail "the reservation was not refused naming the owner: $OUT"
+OUT=$(GATE_SLOT_FILE="$WORK/slot" GATE_SLOT_OWNER=Saturnus GATE_DRY_RUN=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    && fail "a reserved host let another caller gate: $OUT"
+printf 'purpose=nobody\n' > "$WORK/slot-noowner"
+OUT=$(GATE_SLOT_FILE="$WORK/slot-noowner" GATE_SLOT_OWNER= GATE_DRY_RUN=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    && fail "a slot file with no owner was accepted: $OUT"
+grep -qF "names no owner" <<<"$OUT" || fail "an ownerless slot file was not refused by name: $OUT"
+[ "$(leftovers)" -eq 0 ] || fail "a refused reservation left a workspace behind"
+
+# 30. ... and the owner may gate.
+OUT=$(GATE_SLOT_FILE="$WORK/slot" GATE_SLOT_OWNER=Pluto GATE_DRY_RUN=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "the slot's owner was refused: $OUT"
+grep -qF "gating on a host reserved for Pluto, as Pluto" <<<"$OUT" || fail "the owner's gate did not say it runs on a reserved host: $OUT"
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"

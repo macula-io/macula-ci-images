@@ -78,6 +78,11 @@
 # one tells Terra's docker shim to set the slice itself, and the shim refuses a
 # caller's --cgroup-parent. So the two are refused together: gate with plain
 # podman and GATE_CGROUP_PARENT, or through the shim with its variable.
+#
+# A host can be reserved: while GATE_SLOT_FILE (default ~/.host00-slot) exists,
+# the gate refuses to start unless GATE_SLOT_OWNER equals the file's owner=
+# line, and names the owner. A measurement slot on host00 must not share the
+# machine with anyone's gate; gate on msi00 or in GitHub CI instead.
 # Needs git, python3 with PyYAML.
 #
 # Usage: scripts/ci_gate.sh <repo> <sha> [workflow file, default lint.yml] [job, default check]
@@ -86,6 +91,7 @@
 #   GATE_LOG_DIR=~/.cache/ci-gate GATE_LOG_KEEP=20
 #   GATE_MATRIX=check=eunit GATE_DRY_RUN=1
 #   GATE_CGROUP_PARENT=ci-runners.slice (msi00, with plain podman)
+#   GATE_SLOT_FILE=~/.host00-slot GATE_SLOT_OWNER=<the slot's owner>
 #   e.g. GATE_TEST_CPUS=runner scripts/ci_gate.sh ~/work/github.com/macula-io/macula <sha> test.yml test
 set -euo pipefail
 
@@ -133,6 +139,24 @@ fi
 if [ -n "${GATE_DRY_RUN+set}" ] && [ "$GATE_DRY_RUN" != 1 ]; then
     echo "REFUSED: GATE_DRY_RUN='$GATE_DRY_RUN'; set it to 1 or leave it unset"
     exit 2
+fi
+
+# A reserved host, checked before anything runs: the slot file names its owner,
+# and only the owner may gate here while it exists. A slot file with no owner
+# line is refused too: a reservation nobody can match is still a reservation.
+SLOT_FILE="${GATE_SLOT_FILE:-$HOME/.host00-slot}"
+if [ -e "$SLOT_FILE" ]; then
+    SLOT_OWNER="$(sed -n 's/^owner=//p' "$SLOT_FILE" | head -1)"
+    SLOT_PURPOSE="$(sed -n 's/^purpose=//p' "$SLOT_FILE" | head -1)"
+    if [ -z "$SLOT_OWNER" ]; then
+        echo "REFUSED: $SLOT_FILE reserves this host but names no owner; gate on msi00 or GitHub CI"
+        exit 2
+    fi
+    if [ "${GATE_SLOT_OWNER:-}" != "$SLOT_OWNER" ]; then
+        echo "REFUSED: this host is reserved for $SLOT_OWNER (${SLOT_PURPOSE:-no purpose given}; $SLOT_FILE); gate on msi00 or GitHub CI"
+        exit 2
+    fi
+    echo "gating on a host reserved for $SLOT_OWNER, as $SLOT_OWNER"
 fi
 
 # The runners' slice, checked before anything runs. Set but empty is a
