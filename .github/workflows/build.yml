@@ -20,6 +20,7 @@ on:
       - 'scripts/fixtures/**'
       - 'scripts/test_newest_dated_base.sh'
       - 'scripts/compare_image_layers.sh'
+      - 'scripts/compare_pushed_images.sh'
       - 'scripts/test_compare_image_layers.sh'
       # The signing workflow and its self-test build no base image.
       - '.github/workflows/attest-image.yml'
@@ -117,6 +118,12 @@ jobs:
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
           echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
           echo "Building ${{ matrix.image }} (${{ matrix.file }}) on DEBIAN_VERSION=$debian, SOURCE_DATE_EPOCH=$epoch"
+          # The resolved base is stamped on the image, so what it was built on
+          # is readable from the image itself, not only from this run's log.
+          # Every label is a function of the inputs (see image_labels.sh), so
+          # the config, and with it the manifest digest, is reproducible too.
+          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian")
+          { echo 'labels<<LABELS'; echo "$labels"; echo 'LABELS'; } >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:
@@ -152,11 +159,9 @@ jobs:
           platforms: linux/amd64
           outputs: type=image,push=true,rewrite-timestamp=true
           tags: ${{ steps.meta.outputs.tags }}
-          # The resolved base is stamped on the image, so what it was built on
-          # is readable from the image itself, not only from this run's log.
-          labels: |
-            ${{ steps.meta.outputs.labels }}
-            io.macula.debian-base=${{ steps.base.outputs.debian }}
+          # NOT steps.meta.outputs.labels: metadata-action stamps the build
+          # time and the commit sha, which move the digest on every build.
+          labels: ${{ steps.base.outputs.labels }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
@@ -213,11 +218,19 @@ jobs:
                      | jq -r '.config.Labels["io.macula.debian-base"] // empty')
           day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
           [ -n "$day" ] || { echo "REFUSED: $ci_otp has no dated io.macula.debian-base label ('$debian')"; exit 1; }
+          epoch=$(date -u -d "$day" +%s)
+          labels=$(bash scripts/image_labels.sh "${{ matrix.target }}" "$epoch" \
+                     "io.macula.base.ci-otp=$ci_otp" \
+                     "io.macula.base.pq-runtime=$pq_runtime" \
+                     "io.macula.base.ci-pq-ex118=$ci_pq_ex118")
           {
             echo "ci_otp=$ci_otp"
             echo "pq_runtime=$pq_runtime"
             echo "ci_pq_ex118=$ci_pq_ex118"
-            echo "epoch=$(date -u -d "$day" +%s)"
+            echo "epoch=$epoch"
+            echo 'labels<<LABELS'
+            echo "$labels"
+            echo 'LABELS'
           } >> "$GITHUB_OUTPUT"
           echo "Building ${{ matrix.target }} on CI_OTP=$ci_otp PQ_RUNTIME=$pq_runtime CI_PQ_EX118=$ci_pq_ex118"
 
@@ -239,11 +252,8 @@ jobs:
           platforms: linux/amd64
           outputs: type=image,push=true,rewrite-timestamp=true
           tags: ${{ steps.meta.outputs.tags }}
-          labels: |
-            ${{ steps.meta.outputs.labels }}
-            io.macula.base.ci-otp=${{ steps.bases.outputs.ci_otp }}
-            io.macula.base.pq-runtime=${{ steps.bases.outputs.pq_runtime }}
-            io.macula.base.ci-pq-ex118=${{ steps.bases.outputs.ci_pq_ex118 }}
+          # Inputs only, as above: never metadata-action's time and sha.
+          labels: ${{ steps.bases.outputs.labels }}
           build-args: |
             CI_OTP=${{ steps.bases.outputs.ci_otp }}
             PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}

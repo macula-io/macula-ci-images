@@ -1,6 +1,11 @@
 # Are the base images reproducible? Two uncached builds of the same inputs,
-# back to back, must give identical layers, for every image this repo
-# publishes.
+# back to back, must give the same MANIFEST DIGEST, for every image this repo
+# publishes: the same layers AND the same config (labels, created time,
+# history), because a consumer pins the digest, not the layers.
+#
+# Both builds are pushed, as build.yml pushes, but to a registry that lives
+# only inside the job (a registry:2 service on localhost:5000), so the digest
+# compared is the one a publish would give, and nothing is published.
 #
 # This exists so "the same image" can mean the same bytes: a consumer that
 # pins a base can then tell a real change (a new Debian package, a new
@@ -14,6 +19,9 @@
 #     move an image, and a new Debian base is a real change that should. The
 #     rocksdb images take it from their base's io.macula.debian-base label.
 #   - the image output rewrites every file's timestamp to it;
+#   - every label is a function of the inputs (scripts/image_labels.sh, which
+#     build.yml publishes with too): created is the epoch, and there is no
+#     build time and no commit sha in the config;
 #   - the Containerfiles remove what records the time or the order things
 #     happened in: apt, dpkg and ldconfig logs and caches, hex's cache.ets,
 #     mix's /tmp lock and pubsub files, and rustup's components list (sorted:
@@ -23,7 +31,8 @@
 #
 # Two back-to-back builds see the same apt archive; a different package
 # version between weeks is a real change, and is meant to move the image.
-# When layers differ, the job names the files that differ.
+# When the digests differ, the job says whether the layers or the config
+# moved, and names the files or config fields that differ.
 name: reproducibility
 
 on:
@@ -34,6 +43,10 @@ on:
       - '.github/workflows/build.yml'
       - '.github/workflows/reproducibility.yml'
       - 'scripts/newest_dated_base.py'
+      - 'scripts/image_labels.sh'
+      - 'scripts/compare_image_layers.sh'
+      - 'scripts/compare_pushed_images.sh'
+      - 'scripts/test_compare_image_layers.sh'
   schedule:
     # Sunday 05:00 UTC, after build.yml's weekly uncached build (03:00).
     - cron: '0 5 * * 0'
@@ -42,9 +55,24 @@ on:
 permissions: {}
 
 jobs:
+  # The comparator's own test, so a change to it is proven before it judges
+  # an image. Podman is on the hosted runner; see the test for why podman.
+  comparator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test compare_image_layers.sh
+        run: bash scripts/test_compare_image_layers.sh
+
   twice:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +90,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # On the host network, so buildkit can push to the job's registry.
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
       - name: Resolve the newest dated base and its epoch
         id: base
@@ -72,7 +103,14 @@ jobs:
           day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
           [ -n "$day" ] || { echo "REFUSED: no date in the resolved base '$debian'"; exit 1; }
           echo "debian=$debian" >> "$GITHUB_OUTPUT"
-          echo "epoch=$(date -u -d "$day" +%s)" >> "$GITHUB_OUTPUT"
+          epoch=$(date -u -d "$day" +%s)
+          labels=$(bash scripts/image_labels.sh "${{ matrix.image }}" "$epoch" "io.macula.debian-base=$debian")
+          {
+            echo "epoch=$epoch"
+            echo 'labels<<LABELS'
+            echo "$labels"
+            echo 'LABELS'
+          } >> "$GITHUB_OUTPUT"
 
       - name: First build
         uses: docker/build-push-action@v5
@@ -80,7 +118,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           platforms: linux/amd64
-          outputs: type=docker,name=repro-a,rewrite-timestamp=true
+          outputs: type=image,name=localhost:5000/repro:a,push=true,rewrite-timestamp=true
+          labels: ${{ steps.base.outputs.labels }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
@@ -94,7 +133,8 @@ jobs:
           context: .
           file: ${{ matrix.file }}
           platforms: linux/amd64
-          outputs: type=docker,name=repro-b,rewrite-timestamp=true
+          outputs: type=image,name=localhost:5000/repro:b,push=true,rewrite-timestamp=true
+          labels: ${{ steps.base.outputs.labels }}
           build-args: |
             DEBIAN_VERSION=${{ steps.base.outputs.debian }}
             SOURCE_DATE_EPOCH=${{ steps.base.outputs.epoch }}
@@ -102,15 +142,22 @@ jobs:
           pull: true
           provenance: false
 
-      - name: Compare the layers
-        run: bash scripts/compare_image_layers.sh repro-a repro-b
+      - name: Compare the digests
+        run: bash scripts/compare_pushed_images.sh localhost:5000/repro:a localhost:5000/repro:b
 
   # The rocksdb images, built FROM the images above by digest. Both builds get
   # the same base digests, today's published ones, so the only variable is the
-  # build itself. librocksdb is compiled in both.
+  # build itself. librocksdb is compiled in both. A push that changes a base
+  # AND Containerfile.rocksdb is proven here on the bases published before it;
+  # the next run (or a dispatch after build.yml) proves the pair.
   twice-rocksdb:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     strategy:
       fail-fast: false
       matrix:
@@ -118,7 +165,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # On the host network, so buildkit can push to the job's registry.
       - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
       - name: Resolve the base digests and the epoch
         id: bases
@@ -128,16 +178,28 @@ jobs:
             d=$(docker buildx imagetools inspect "ghcr.io/macula-io/$1:${2:-latest}" --format '{{json .Manifest}}' | jq -r .digest)
             case "$d" in sha256:*) echo "ghcr.io/macula-io/$1@$d" ;; *) echo "REFUSED: no digest for $1:${2:-latest}" >&2; exit 1 ;; esac
           }
+          # Each digest is its own assignment, so a refusal stops the step
+          # (inside an echo argument it would not).
           ci_otp=$(digest macula-ci-otp)
+          pq_runtime=$(digest macula-pq-runtime)
+          ci_pq_ex118=$(digest macula-ci-pq ex118-latest)
           debian=$(docker buildx imagetools inspect "$ci_otp" --format '{{json .Image}}' \
                      | jq -r '.config.Labels["io.macula.debian-base"] // empty')
           day=$(grep -oE '[0-9]{8}' <<<"$debian" | head -1)
           [ -n "$day" ] || { echo "REFUSED: $ci_otp has no dated io.macula.debian-base label ('$debian')"; exit 1; }
+          epoch=$(date -u -d "$day" +%s)
+          labels=$(bash scripts/image_labels.sh "${{ matrix.target }}" "$epoch" \
+                     "io.macula.base.ci-otp=$ci_otp" \
+                     "io.macula.base.pq-runtime=$pq_runtime" \
+                     "io.macula.base.ci-pq-ex118=$ci_pq_ex118")
           {
             echo "ci_otp=$ci_otp"
-            echo "pq_runtime=$(digest macula-pq-runtime)"
-            echo "ci_pq_ex118=$(digest macula-ci-pq ex118-latest)"
-            echo "epoch=$(date -u -d "$day" +%s)"
+            echo "pq_runtime=$pq_runtime"
+            echo "ci_pq_ex118=$ci_pq_ex118"
+            echo "epoch=$epoch"
+            echo 'labels<<LABELS'
+            echo "$labels"
+            echo 'LABELS'
           } >> "$GITHUB_OUTPUT"
 
       - name: First build
@@ -147,7 +209,8 @@ jobs:
           file: Containerfile.rocksdb
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          outputs: type=docker,name=repro-a,rewrite-timestamp=true
+          outputs: type=image,name=localhost:5000/repro:a,push=true,rewrite-timestamp=true
+          labels: ${{ steps.bases.outputs.labels }}
           build-args: |
             CI_OTP=${{ steps.bases.outputs.ci_otp }}
             PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
@@ -163,7 +226,8 @@ jobs:
           file: Containerfile.rocksdb
           target: ${{ matrix.target }}
           platforms: linux/amd64
-          outputs: type=docker,name=repro-b,rewrite-timestamp=true
+          outputs: type=image,name=localhost:5000/repro:b,push=true,rewrite-timestamp=true
+          labels: ${{ steps.bases.outputs.labels }}
           build-args: |
             CI_OTP=${{ steps.bases.outputs.ci_otp }}
             PQ_RUNTIME=${{ steps.bases.outputs.pq_runtime }}
@@ -172,5 +236,5 @@ jobs:
           no-cache: true
           provenance: false
 
-      - name: Compare the layers
-        run: bash scripts/compare_image_layers.sh repro-a repro-b
+      - name: Compare the digests
+        run: bash scripts/compare_pushed_images.sh localhost:5000/repro:a localhost:5000/repro:b
