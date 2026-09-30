@@ -17,7 +17,8 @@
 #
 # What it cannot reproduce it refuses rather than approximates: a step using
 # `shell', `continue-on-error' or `timeout-minutes', a run step's `if' that
-# reads anything but matrix values, literals, always() and success(), or a
+# reads anything but matrix values, github.ref, startsWith(), literals,
+# always() and success(), or a
 # `${{ }}' expression other than `${{ matrix.X }}' in the image, env or a run
 # step, stops the run before anything starts, naming what it found. `uses:'
 # steps are skipped and listed, their `if' unevaluated: the export replaces
@@ -90,6 +91,8 @@
 #   GATE_CPUS=4 GATE_MEMORY=8g ENGINE=podman GATE_TEST_CPUS=runner|0.5
 #   GATE_LOG_DIR=~/.cache/ci-gate GATE_LOG_KEEP=20
 #   GATE_MATRIX=check=eunit GATE_DRY_RUN=1
+#   GATE_REF=refs/heads/main (what github.ref reads in a step's if; a
+#     refs/tags/v* guard is skipped on the default, as on a branch push)
 #   GATE_CGROUP_PARENT=ci-runners.slice (msi00, with plain podman)
 #   GATE_SLOT_FILE=~/.host00-slot GATE_SLOT_OWNER=<the slot's owner>
 #   e.g. GATE_TEST_CPUS=runner scripts/ci_gate.sh ~/work/github.com/macula-io/macula <sha> test.yml test
@@ -135,6 +138,13 @@ if [ -n "${GATE_TEST_CPUS+set}" ]; then
         exit 2
     fi
 fi
+
+GATE_REF="${GATE_REF-refs/heads/main}"   # set but empty is a mistake, not the default
+if ! [[ "$GATE_REF" =~ ^refs/(heads|tags)/[^[:space:]]+$ ]]; then
+    echo "REFUSED: GATE_REF='$GATE_REF' is not refs/heads/<branch> or refs/tags/<tag>"
+    exit 1
+fi
+export GATE_REF
 
 if [ -n "${GATE_DRY_RUN+set}" ] && [ "$GATE_DRY_RUN" != 1 ]; then
     echo "REFUSED: GATE_DRY_RUN='$GATE_DRY_RUN'; set it to 1 or leave it unset"
@@ -265,16 +275,25 @@ if requested is not None:
     selected = matches[0]
 
 # A step's `if', for one combination, with GitHub's expression semantics.
-# What it may read: matrix values (typed as the YAML has them), string and
-# number literals, true/false, always() and success(), joined by ==, !=, !,
+# What it may read: matrix values (typed as the YAML has them), github.ref
+# (GATE_REF), string and number literals, true/false, always(), success() and
+# startsWith(a, b) (case-insensitive, as GitHub's), joined by ==, !=, !,
 # && and || with parentheses; precedence ! > ==/!= > && > ||. == between two
 # strings ignores case; between different types it compares as numbers (true
 # is 1, '' is 0, a string that is not a number is NaN, which equals nothing).
 # A bare value is truthy unless it is false, 0, '' or NaN. Anything else
 # (failure(), steps.*, github.*, functions) is refused by name on a run step.
 # A uses: step is skipped, so its if is not evaluated at all.
-TOKEN = re.compile(r"\s*(?:(\(|\)|&&|\|\||!=|==|!)|(always\(\)|success\(\))|(true|false)\b"
-                   r"|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)\b|matrix\.([A-Za-z_][A-Za-z0-9_-]*))")
+TOKEN = re.compile(r"\s*(?:(\(|\)|&&|\|\||!=|==|!|,)|(always\(\)|success\(\))|(true|false)\b"
+                   r"|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)\b|matrix\.([A-Za-z_][A-Za-z0-9_-]*)"
+                   r"|(?i:(startsWith)\s*\()|(github\.ref)\b(?!\.|_))")
+
+def text_of(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float):
+        return str(int(v)) if v.is_integer() else str(v)
+    return str(v)
 
 def number(v):
     if isinstance(v, bool):
@@ -308,8 +327,12 @@ def evaluate(step, combo):
         m = TOKEN.match(body, pos)
         if not m or m.end() == pos:
             sys.exit(refuse)
-        op, fn, lit, string, num, key = m.groups()
-        if op:
+        op, fn, lit, string, num, key, starts, ref = m.groups()
+        if starts:
+            tokens.append(("starts", None))
+        elif ref:
+            tokens.append(("val", os.environ["GATE_REF"]))
+        elif op:
             tokens.append(("op", op))
         elif fn:
             status = status or fn == "always()"
@@ -336,6 +359,13 @@ def evaluate(step, combo):
         at[0] += 1
         return t[1]
     def primary():
+        if peek() == ("starts", None):
+            take("starts")
+            a = disjunction()
+            take("op", ",")
+            b = disjunction()
+            take("op", ")")
+            return text_of(a).lower().startswith(text_of(b).lower())
         if peek() == ("op", "("):
             take("op", "(")
             v = disjunction()

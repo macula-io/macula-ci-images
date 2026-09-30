@@ -498,6 +498,29 @@ for step in number-eq string-eq-number; do
     grep -qx "  run: $step" <<<"$(tplan false)" || fail "with flag=false, $step did not run (CI runs it): $(tplan false)"
 done
 
+# A tag guard (station 0.7.4's tag-equals-app-vsn step) reads github.ref, which
+# is GATE_REF: skipped on the default refs/heads/main, run on a v* tag.
+SHA=$(wf tagguard 'jobs:
+  check:
+    runs-on: ubuntu-latest
+    container:
+      image: '"$IMAGE"'
+    steps:
+      - name: on-tag
+        if: startsWith(github.ref, '"'refs/tags/v'"')
+        run: "true"
+      - name: off-tag
+        if: ${{ !StartsWith(github.ref, '"'REFS/TAGS/V'"') && true }}
+        run: "true"')
+OUT=$(GATE_DRY_RUN=1 "$GATE" "$WORK/tagguard" "$SHA" 2>&1) || fail "a startsWith(github.ref) guard was refused: $OUT"
+grep -qx "  not run: on-tag" <<<"$OUT" || fail "on refs/heads/main the tag guard ran: $OUT"
+grep -qx "  run: off-tag" <<<"$OUT" || fail "on refs/heads/main the branch step did not run: $OUT"
+OUT=$(GATE_REF=refs/tags/v0.7.4 GATE_DRY_RUN=1 "$GATE" "$WORK/tagguard" "$SHA" 2>&1) || fail "GATE_REF=refs/tags/v0.7.4 was refused: $OUT"
+grep -qx "  run: on-tag" <<<"$OUT" || fail "on a v* tag the tag guard did not run: $OUT"
+grep -qx "  not run: off-tag" <<<"$OUT" || fail "on a v* tag the branch step ran: $OUT"
+OUT=$(GATE_REF=main GATE_DRY_RUN=1 "$GATE" "$WORK/tagguard" "$SHA" 2>&1) && fail "GATE_REF=main was accepted: $OUT"
+grep -q "REFUSED: GATE_REF='main'" <<<"$OUT" || fail "the GATE_REF refusal was not named: $OUT"
+
 # 26. A throttled matrix runs EVERY combination. The throttled pass restarts
 #     the container with `podman start -a', and the fan-out loop fed each
 #     child its combinations list on stdin: the first child's run read it to
