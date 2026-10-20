@@ -58,6 +58,11 @@ on:
         description: 'The digest the build pushed, sha256:<64 hex>'
         required: true
         type: string
+      tag-prefix:
+        description: 'What a release tag starts with before its version; default v (macula-rust FFI: ffi-v)'
+        required: false
+        type: string
+        default: 'v'
       versions:
         description: 'check (default): the tag must be the version the repository publishes. none: the caller declares the tag IS the version (Go), so only the on-branch check runs'
         required: false
@@ -90,6 +95,9 @@ jobs:
   # scripts/test_release_guard.sh fails if the two ever differ.
   guard:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
+    env:
+      # Read by every check below: what a release tag starts with.
+      RELEASE_TAG_PREFIX: ${{ inputs.tag-prefix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,7 +134,11 @@ jobs:
           #       prints that and passes. It never comes from a default, and it leaves the
           #       on-branch check exactly as it is.
           #
-          # A ref that is not a tag named v<version> is not a release: both checks print that
+          # The release tag is <prefix><version>, the prefix v unless RELEASE_TAG_PREFIX names
+          # another (macula-rust's FFI crate releases from ffi-v<version>). A prefix holds only
+          # letters, digits, dot, underscore and hyphen; anything else stops the guard (exit 2).
+          #
+          # A ref that is not a tag named <prefix><version> is not a release: both checks print that
           # and exit 0. A release-only workflow that must refuse anything else asks for it with
           # the workflow's `require-tag' input, not here.
           #
@@ -143,11 +155,17 @@ jobs:
             exit 2
           }
 
+          prefix="${RELEASE_TAG_PREFIX-v}"
+          if ! printf '%s' "$prefix" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            echo "release guard: RELEASE_TAG_PREFIX must be letters, digits, '.', '_' or '-', got '$prefix'" >&2
+            exit 2
+          fi
+
           # The version a ref names, or non-zero when the ref is not a release tag.
           tag_version() {
             local ref="$1"
             case "$ref" in
-              refs/tags/v*) printf '%s\n' "${ref#refs/tags/v}" ;;
+              "refs/tags/$prefix"*) printf '%s\n' "${ref#"refs/tags/$prefix"}" ;;
               *) return 1 ;;
             esac
           }
@@ -205,9 +223,11 @@ jobs:
                            -not -path '*/deps/*' -not -path '*/_checkouts/*' \
                            -not -path '*/node_modules/*' | sort)
               done
-            else
+            elif [ "$beam" -eq 1 ]; then
+              # Only a tree whose root is BEAM (a rebar.config) has its .app.src files read: an
+              # Erlang helper somewhere below a Rust or Go tree (macula-rust's
+              # scripts/cross-verify-macula) is not what that release publishes.
               while IFS= read -r f; do
-                beam=1
                 v="$(sed -n 's/.*{vsn,[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | first_line)"
                 printf '%s\tapp.src vsn\t%s\n' "${f#"$root"/}" "$v"
               done < <(find "$root" -name '*.app.src' \
@@ -228,9 +248,7 @@ jobs:
             # in a BEAM repository is not what the release publishes.
             if [ "$beam" -eq 0 ]; then
               if [ -f "$root/Cargo.toml" ]; then
-                v="$(awk '/^\[package\]/ { p = 1 } p && /^[[:space:]]*version[[:space:]]*=/ {
-                          s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' "$root/Cargo.toml")"
-                printf '%s\tpackage version\t%s\n' Cargo.toml "$v"
+                cargo_version "$root/Cargo.toml"
               fi
               if [ -f "$root/package.json" ]; then
                 v="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$root/package.json" | first_line)"
@@ -241,11 +259,49 @@ jobs:
                           s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' "$root/pyproject.toml")"
                 printf '%s\tproject version\t%s\n' pyproject.toml "$v"
               fi
+              # Every project that packs: <Version>, or <VersionPrefix> with any <VersionSuffix>
+              # (what dotnet pack stamps), from the project or else from a root
+              # Directory.Build.props. A project marked <IsPackable>false</IsPackable> (a test, an
+              # example) publishes nothing and is not read.
               while IFS= read -r f; do
-                v="$(sed -n 's/.*<Version>[[:space:]]*\([^<]*\)<.*/\1/p' "$f" | first_line)"
+                grep -Eqi '<IsPackable>[[:space:]]*false[[:space:]]*</IsPackable>' "$f" && continue
+                v="$(dotnet_version "$f")"
+                [ -z "$v" ] && [ -f "$root/Directory.Build.props" ] && v="$(dotnet_version "$root/Directory.Build.props")"
                 printf '%s\tassembly version\t%s\n' "${f#"$root"/}" "$v"
               done < <(find "$root" -name '*.csproj' -not -path '*/.git/*' -not -path '*/bin/*' -not -path '*/obj/*' | sort)
             fi
+          }
+
+          # Cargo.toml's published version, one "file<TAB>source<TAB>version" line: [package]
+          # version, or [workspace.package] version when the package says version.workspace =
+          # true or the root is a workspace with no [package] (macula-pqc releases every crate
+          # at the workspace's one version). Each key is read only inside its own table, so a
+          # version in [dependencies.x] is never taken for the package's.
+          cargo_version() {
+            awk '
+              function value(line,   s) { s = line; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); return s }
+              /^[[:space:]]*\[/ { table = $0; gsub(/[[:space:]]/, "", table); next }
+              table == "[package]" && /^[[:space:]]*version[[:space:]]*=/ { pkg = value($0); has_pkg = 1 }
+              table == "[package]" && /^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true/ { inherit = 1 }
+              table == "[package]" { in_pkg = 1 }
+              table == "[workspace.package]" && /^[[:space:]]*version[[:space:]]*=/ { ws = value($0); has_ws = 1 }
+              END {
+                if (has_pkg)                     printf "Cargo.toml\tpackage version\t%s\n", pkg
+                else if (in_pkg && !inherit)     printf "Cargo.toml\tpackage version\t\n"
+                else if (has_ws)                 printf "Cargo.toml\tworkspace.package version\t%s\n", ws
+                else                             printf "Cargo.toml\t%s version\t\n", (inherit ? "inherited workspace" : "package")
+              }' "$1"
+          }
+
+          # The version an MSBuild file stamps on a package: <Version> when it names one, else
+          # <VersionPrefix>, with -<VersionSuffix> when that is set too.
+          dotnet_version() {
+            local full prefix_v suffix
+            full="$(sed -n 's/.*<Version>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*<.*/\1/p' "$1" | first_line)"
+            if [ -n "$full" ]; then printf '%s\n' "$full"; return; fi
+            prefix_v="$(sed -n 's/.*<VersionPrefix>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*<.*/\1/p' "$1" | first_line)"
+            suffix="$(sed -n 's/.*<VersionSuffix>[[:space:]]*\([^<]*[^<[:space:]]\)[[:space:]]*<.*/\1/p' "$1" | first_line)"
+            [ -n "$prefix_v" ] && printf '%s%s\n' "$prefix_v" "${suffix:+-$suffix}"
           }
 
           check_on_branch() {
@@ -271,7 +327,7 @@ jobs:
             fi
 
             if git merge-base --is-ancestor "$sha" "$default_ref"; then
-              echo "release guard: ok, $sha is on origin/$default (tag v$version)"
+              echo "release guard: ok, $sha is on origin/$default (tag $prefix$version)"
               return 0
             fi
 
@@ -282,11 +338,11 @@ jobs:
             maint="$(maintenance_branch "$version")"
             if [ -n "$maint" ] && git rev-parse --verify --quiet "refs/remotes/origin/$maint^{commit}" > /dev/null \
                && git merge-base --is-ancestor "$sha" "refs/remotes/origin/$maint"; then
-              echo "release guard: ok, $sha is on origin/$maint, the maintenance branch of v$version"
+              echo "release guard: ok, $sha is on origin/$maint, the maintenance branch of $prefix$version"
               return 0
             fi
 
-            echo "release guard: REFUSED, tag v$version names $sha, which is not an ancestor of"
+            echo "release guard: REFUSED, tag $prefix$version names $sha, which is not an ancestor of"
             echo "release guard: origin/$default${maint:+ or origin/$maint}. A release built from a"
             echo "release guard: side branch leaves the release to be cut again from the default branch:"
             git log --oneline "$default_ref..$sha" | sed 's/^/release guard:   only on the tag: /'
@@ -315,7 +371,7 @@ jobs:
 
             lines="$(read_versions "$root")"
             if [ -z "$lines" ]; then
-              echo "release guard: REFUSED, v$version names a release but $root holds no version" >&2
+              echo "release guard: REFUSED, $prefix$version names a release but $root holds no version" >&2
               echo "release guard: (no .app.src, rebar.config relx, mix.exs, Cargo.toml," >&2
               echo "release guard: package.json, pyproject.toml or *.csproj)" >&2
               return 1
@@ -335,10 +391,10 @@ jobs:
             done <<< "$lines"
 
             if [ "$bad" -ne 0 ]; then
-              printf 'v%s disagrees with %s of %s version sources\n' "$version" "$bad" "$found"
+              printf '%s%s disagrees with %s of %s version sources\n' "$prefix" "$version" "$bad" "$found"
               return 1
             fi
-            echo "release guard: ok, v$version is what all $found version sources publish"
+            echo "release guard: ok, $prefix$version is what all $found version sources publish"
             return 0
           }
 
@@ -356,7 +412,7 @@ jobs:
           # The caller's own default branch, from the event that started this run.
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ -z "$DEFAULT_BRANCH" ] && [ "${REF#refs/tags/v}" != "$REF" ]; then
+          if [ -z "$DEFAULT_BRANCH" ] && [ "${REF#"refs/tags/$RELEASE_TAG_PREFIX"}" != "$REF" ]; then
             echo "::error::the event payload names no default branch, so a release tag cannot be checked"
             exit 1
           fi

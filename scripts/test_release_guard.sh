@@ -326,5 +326,78 @@ run_case "a versions value that is neither check nor none cannot be checked" 2 \
 run_case "an empty versions value is the default check, not none" 1 \
   "$GUARD" versions refs/tags/v1.2.3 "$WORK/go" ""
 
+# --- a tag prefix other than v (macula-rust's FFI crate: ffi-v<version>) ----------
+mkdir -p "$WORK/ffi"
+printf '[package]\nname = "thing-ffi"\nversion = "0.9.0"\n' > "$WORK/ffi/Cargo.toml"
+run_case "an ffi-v tag is checked when the prefix is ffi-v" 0 \
+  env RELEASE_TAG_PREFIX=ffi-v "$GUARD" versions refs/tags/ffi-v0.9.0 "$WORK/ffi"
+run_case "an ffi-v tag that disagrees is refused when the prefix is ffi-v" 1 \
+  env RELEASE_TAG_PREFIX=ffi-v "$GUARD" versions refs/tags/ffi-v0.9.1 "$WORK/ffi"
+run_case "an ffi-v tag off the default branch is refused when the prefix is ffi-v" 1 \
+  env -C "$REPO" RELEASE_TAG_PREFIX=ffi-v "$GUARD" on-branch refs/tags/ffi-v1.2.3 "$OFF_MAIN" main
+run_case "an ffi-v tag on its maintenance branch passes when the prefix is ffi-v" 0 \
+  env -C "$REPO" RELEASE_TAG_PREFIX=ffi-v "$GUARD" on-branch refs/tags/ffi-v0.10.4 "$ON_MAINT" main
+run_case "a v tag is not this caller's release when the prefix is ffi-v" 0 \
+  env RELEASE_TAG_PREFIX=ffi-v "$GUARD" versions refs/tags/v0.9.1 "$WORK/ffi"
+run_case "a prefix with a glob character cannot be checked" 2 \
+  env RELEASE_TAG_PREFIX='ffi-*' "$GUARD" versions refs/tags/ffi-v0.9.0 "$WORK/ffi"
+run_case "an empty prefix cannot be checked" 2 \
+  env RELEASE_TAG_PREFIX= "$GUARD" versions refs/tags/0.9.0 "$WORK/ffi"
+
+# --- Cargo workspaces (macula-pqc: every crate at [workspace.package] version) -------
+mkdir -p "$WORK/cargo-ws"
+printf '[workspace]\nmembers = ["a"]\n\n[workspace.package]\nversion = "0.3.0"\nedition = "2021"\n\n[workspace.dependencies]\na = { path = "a", version = "0.3.0" }\n' \
+  > "$WORK/cargo-ws/Cargo.toml"
+run_case "a workspace root reads [workspace.package] version" 0 \
+  "$GUARD" versions refs/tags/v0.3.0 "$WORK/cargo-ws"
+run_case "a workspace version that disagrees is refused" 1 \
+  "$GUARD" versions refs/tags/v0.3.1 "$WORK/cargo-ws"
+mkdir -p "$WORK/cargo-inherit"
+printf '[package]\nname = "thing"\nversion.workspace = true\n\n[workspace]\nmembers = ["."]\n\n[workspace.package]\nversion = "1.1.0"\n' \
+  > "$WORK/cargo-inherit/Cargo.toml"
+run_case "a package that inherits the workspace version reads it" 0 \
+  "$GUARD" versions refs/tags/v1.1.0 "$WORK/cargo-inherit"
+mkdir -p "$WORK/cargo-dep-table"
+printf '[package]\nname = "thing"\nedition = "2021"\n\n[dependencies.serde]\nversion = "1.4.0"\n' \
+  > "$WORK/cargo-dep-table/Cargo.toml"
+run_case "a dependency table's version is not the package's" 1 \
+  "$GUARD" versions refs/tags/v1.4.0 "$WORK/cargo-dep-table"
+
+# An Erlang helper below a non-BEAM root (macula-rust's scripts/cross-verify-macula) is
+# not what the release publishes: BEAM is the ROOT's rebar.config or mix.exs.
+mkdir -p "$WORK/rust-with-helper/scripts/helper/src"
+printf '[package]\nname = "thing"\nversion = "0.11.0-rc.1"\n' > "$WORK/rust-with-helper/Cargo.toml"
+printf '{application, helper, [{vsn, "1"}]}.\n' > "$WORK/rust-with-helper/scripts/helper/src/helper.app.src"
+run_case "an Erlang helper below a Cargo root does not make it BEAM" 0 \
+  "$GUARD" versions refs/tags/v0.11.0-rc.1 "$WORK/rust-with-helper"
+
+# --- .NET <VersionPrefix> (reckon-dotnet), and projects that pack nothing ------------
+mkdir -p "$WORK/net-prefix/src/Lib" "$WORK/net-prefix/test/Lib.Tests"
+printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n    <VersionPrefix>0.1.0</VersionPrefix>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include="X" Version="9.9.9" />\n  </ItemGroup>\n</Project>\n' \
+  > "$WORK/net-prefix/src/Lib/Lib.csproj"
+printf '<Project>\n  <PropertyGroup>\n    <IsPackable>false</IsPackable>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-prefix/test/Lib.Tests/Lib.Tests.csproj"
+run_case "a .csproj VersionPrefix that agrees passes, a test project is skipped" 0 \
+  "$GUARD" versions refs/tags/v0.1.0 "$WORK/net-prefix"
+run_case "a .csproj VersionPrefix that disagrees is refused" 1 \
+  "$GUARD" versions refs/tags/v0.1.1 "$WORK/net-prefix"
+mkdir -p "$WORK/net-suffix"
+printf '<Project>\n  <PropertyGroup>\n    <VersionPrefix>0.2.0</VersionPrefix>\n    <VersionSuffix>rc.1</VersionSuffix>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-suffix/Lib.csproj"
+run_case "VersionPrefix with VersionSuffix compares as prefix-suffix" 0 \
+  "$GUARD" versions refs/tags/v0.2.0-rc.1 "$WORK/net-suffix"
+mkdir -p "$WORK/net-props/src/Lib"
+printf '<Project>\n  <PropertyGroup>\n    <VersionPrefix>0.4.0</VersionPrefix>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-props/Directory.Build.props"
+printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-props/src/Lib/Lib.csproj"
+run_case "a packing project with no version reads Directory.Build.props" 0 \
+  "$GUARD" versions refs/tags/v0.4.0 "$WORK/net-props"
+mkdir -p "$WORK/net-none"
+printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-none/Lib.csproj"
+run_case "a packing project with no version anywhere is refused" 1 \
+  "$GUARD" versions refs/tags/v0.4.0 "$WORK/net-none"
+
 printf '\n%s cases, %s failed\n' "$cases" "$failures"
 [ "$failures" -eq 0 ]

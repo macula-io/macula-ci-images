@@ -54,3 +54,11 @@ jobs:
     uses: ./.github/workflows/release-guard.yml
     with:
       versions: none
+
+  # A caller whose release tags carry another prefix (macula-rust's ffi-v<version>).
+  wired-tag-prefix:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-guard.yml
+    with:
+      tag-prefix: ffi-v

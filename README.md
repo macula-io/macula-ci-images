@@ -217,8 +217,12 @@ building.
    nothing else does. The caller cannot name another branch.
 2. **The tag is the version the repository publishes.** BEAM: the relx release version
    and the `vsn` of every app the release names (a helper app beside the release is not
-   checked). Elsewhere: the manifest the release publishes, `Cargo.toml`,
-   `package.json`, `pyproject.toml` or `*.csproj`. `mcl-fovea` 0.6.1 shipped a relx
+   checked). Elsewhere: the manifest the release publishes, `Cargo.toml` (`[package]`
+   version, or `[workspace.package]` version for a workspace root or a crate that
+   inherits it), `package.json`, `pyproject.toml` or every `*.csproj` that packs
+   (`<Version>`, or `<VersionPrefix>` plus any `<VersionSuffix>`, from the project or
+   the root `Directory.Build.props`; a project with `<IsPackable>false</IsPackable>` is
+   not read). `mcl-fovea` 0.6.1 shipped a relx
    version of 0.4.2, so a box reporting its release reported the wrong one.
 
 ```yaml
@@ -235,6 +239,12 @@ guard:
 repository root: macula-portal keeps its umbrella `mix.exs` in `system/`. Read from the
 root, that tree holds no version and the release is refused. `attest-image.yml` takes
 the same input.
+
+`tag-prefix` names what a release tag starts with, `v` unless set: macula-rust's FFI
+crate releases from `ffi-v<version>` tags, so its release workflow passes
+`tag-prefix: ffi-v` (with `version-root: macula-rust-ffi`) and those tags are checked
+rather than passed as not being releases. A prefix is letters, digits, `.`, `_` and
+`-`; anything else stops the guard.
 
 `versions: none` is a declaration, for a repository whose version is the tag itself and
 appears in no file: a Go module (macula-go, mcl-fovea-keeper), where `go.mod` names no
@@ -258,7 +268,8 @@ The version check fails closed on a source it cannot read a literal version from
 Elixir project whose `version:` is a module attribute, a relx release whose version is
 a macro, a manifest with no literal version, and an umbrella whose root names no
 version at all are all refused rather than passed. BEAM is detected by a
-`rebar.config` or `mix.exs` in the root, so a BEAM repository that also carries a
+`rebar.config` or `mix.exs` in the root, and only then are `.app.src` files read (an
+Erlang helper below a Rust tree is not what it releases), so a BEAM repository that also carries a
 `package.json` is checked against its Erlang or Elixir versions only. When a
 `rebar.config` names several relx releases, the first one is what relx builds, so it is
 the one checked.
