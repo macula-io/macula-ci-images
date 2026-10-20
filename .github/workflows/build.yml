@@ -26,6 +26,14 @@ on:
       # The signing workflow and its self-test build no base image.
       - '.github/workflows/attest-image.yml'
       - '.github/workflows/attest-image-selftest.yml'
+      # The release guard, its self-test and the script that embeds it into the
+      # two workflows above touch no Containerfile either. Without these a
+      # guard-only change rebuilds and republishes every base image for nothing.
+      - '.github/workflows/release-guard.yml'
+      - '.github/workflows/release-guard-selftest.yml'
+      - 'scripts/release_guard.sh'
+      - 'scripts/test_release_guard.sh'
+      - 'scripts/embed_release_guard.sh'
       # The reproducibility check builds and publishes nothing.
       - '.github/workflows/reproducibility.yml'
   schedule:
