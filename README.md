@@ -246,6 +246,12 @@ version at all are all refused rather than passed. BEAM is detected by a
 `rebar.config` names several relx releases, the first one is what relx builds, so it is
 the one checked.
 
+Two BEAM shapes escape the version check, both by being read as something other than
+what they are. An app named as a tuple in the release list (`{mnesia, load}`) is
+skipped, so its version is not compared. And because the first tuple in the file is the
+one read, a release declared inside a `profiles` block is treated as the top-level
+release, which can refuse a good release or check the wrong one.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

@@ -121,6 +121,18 @@ run_case "tag on a commit that is on the default branch passes" 0 \
 run_case "a branch ref is not a release and passes" 0 \
   env -C "$REPO" "$GUARD" on-branch refs/heads/main "$OFF_MAIN" main
 
+# A tag can be named origin/main, and git resolves refs/tags/<name> BEFORE
+# refs/remotes/<name>, so a short ref lets whoever pushes a tag name their own commit as
+# the default branch: merge-base then asks whether the commit is an ancestor of itself,
+# the guard prints ok, and the release signs. A CI checkout with fetch-depth: 0 fetches
+# every tag, so the tag is present when the guard runs.
+# The tag is written with update-ref: `git tag` refuses to run at all where tag.gpgSign
+# is set, so it would create nothing and the case would pass for the wrong reason.
+git -C "$REPO" update-ref refs/tags/origin/main "$OFF_MAIN"
+git -C "$REPO" fetch -q origin --tags
+run_case "a tag named origin/main cannot stand in for the default branch" 1 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v1.2.3 "$OFF_MAIN" main
+
 NODEFAULT="$WORK/repo-without-origin"
 git init -q -b main "$NODEFAULT" && touch "$NODEFAULT/file"
 run_case "a checkout without the default branch cannot be checked" 2 \

@@ -131,20 +131,28 @@ read_versions() {
 }
 
 check_on_branch() {
-  local ref="$1" sha="$2" default="$3" version
+  local ref="$1" sha="$2" default="$3" version default_ref
 
   if ! version="$(tag_version "$ref")"; then
     echo "release guard: $ref is not a release tag, so the commit may be anywhere"
     return 0
   fi
 
-  if ! git rev-parse --verify --quiet "origin/$default^{commit}" > /dev/null; then
+  # The full ref, never the short origin/<default>. Git looks for refs/tags/<name>
+  # before refs/remotes/<name>, and a checkout with fetch-depth: 0 brings every tag, so
+  # a tag pushed as origin/main would be read as the default branch: the commit would
+  # then be an ancestor of itself, the guard would print ok, and the release would be
+  # signed. Naming the remote-tracking ref in full leaves nothing to shadow it: neither
+  # refs/tags nor refs/heads is consulted for a name that starts with refs/.
+  default_ref="refs/remotes/origin/$default"
+
+  if ! git rev-parse --verify --quiet "$default_ref^{commit}" > /dev/null; then
     echo "release guard: origin/$default is not in this checkout; fetch the default" >&2
     echo "release guard: branch with fetch-depth: 0 before calling the guard" >&2
     return 2
   fi
 
-  if git merge-base --is-ancestor "$sha" "origin/$default"; then
+  if git merge-base --is-ancestor "$sha" "$default_ref"; then
     echo "release guard: ok, $sha is on origin/$default (tag v$version)"
     return 0
   fi
@@ -152,7 +160,7 @@ check_on_branch() {
   echo "release guard: REFUSED, tag v$version names $sha, which is not an ancestor of"
   echo "release guard: origin/$default. A release built from a side branch leaves the"
   echo "release to be cut again from the default branch:"
-  git log --oneline "origin/$default..$sha" | sed 's/^/release guard:   only on the tag: /'
+  git log --oneline "$default_ref..$sha" | sed 's/^/release guard:   only on the tag: /'
   printf '%s is not on origin/%s\n' "${sha:0:12}" "$default"
   return 1
 }
