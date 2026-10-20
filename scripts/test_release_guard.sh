@@ -371,6 +371,16 @@ printf '{application, helper, [{vsn, "1"}]}.\n' > "$WORK/rust-with-helper/script
 run_case "an Erlang helper below a Cargo root does not make it BEAM" 0 \
   "$GUARD" versions refs/tags/v0.11.0-rc.1 "$WORK/rust-with-helper"
 
+# The same shape under a package.json root, as macula-ts has it: the cross-verify helper
+# at vsn 1 sits below a Node package, and the version npm publishes is the package.json
+# one. A recursive find that took it for a BEAM app refused every macula-ts release.
+mkdir -p "$WORK/npm-with-helper/scripts/cross-verify-macula/src"
+printf '{\n  "name": "thing",\n  "version": "0.31.0"\n}\n' > "$WORK/npm-with-helper/package.json"
+printf '{application, cross_verify_macula, [{vsn, "1"}]}.\n' \
+  > "$WORK/npm-with-helper/scripts/cross-verify-macula/src/cross_verify_macula.app.src"
+run_case "an Erlang helper below a package.json root does not make it BEAM" 0 \
+  "$GUARD" versions refs/tags/v0.31.0 "$WORK/npm-with-helper"
+
 # A virtual workspace publishes every member crate: one with its own version is a
 # version source too (Mercurius, on fd7df54: it passed unchecked).
 mkdir -p "$WORK/cargo-ws-members/crates/a" "$WORK/cargo-ws-members/crates/b" "$WORK/cargo-ws-members/target/x"
