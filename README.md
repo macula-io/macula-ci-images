@@ -202,7 +202,7 @@ with `--type spdxjson` and with `--type slsaprovenance1`.
 
 ## Refusing a bad release: `release-guard.yml`
 
-A reusable workflow that refuses a `v*` tag which must not be released. It runs
+A reusable workflow that refuses a `v*` tag which must not be released. It runs in
 `attest-image.yml` before anything is signed, so every image release gets it, and a
 release-only workflow (hex, crates.io, npm, PyPI, NuGet) can call it as its first job.
 Any other ref passes untouched, so a repository that builds on every `main` push keeps
@@ -227,9 +227,24 @@ guard:
 ```
 
 The checks are `scripts/release_guard.sh`, which prints every version source it read
-and every one that disagreed. `scripts/test_release_guard.sh` proves each refusal and
-each pass on throwaway repositories and fixtures, and `release-guard-selftest.yml`
-runs it on every change to either file, plus one call of the workflow itself.
+and every one that disagreed. They travel inside the workflow rather than being read
+from the caller's tree: a reusable workflow runs in the caller's repository, so
+`./scripts/release_guard.sh` would be missing in every other repository and, worse, a
+tag that skipped review could carry its own copy and choose its own guard.
+`scripts/embed_release_guard.sh` writes the block into `release-guard.yml` and
+`attest-image.yml`, and `scripts/test_release_guard.sh` extracts the block and runs
+every case against it, failing if the two files differ by a byte.
+`release-guard-selftest.yml` runs it on every change, plus one call of the workflow
+itself.
+
+The version check fails closed on a source it cannot read a literal version from: an
+Elixir project whose `version:` is a module attribute, a relx release whose version is
+a macro, a manifest with no literal version, and an umbrella whose root names no
+version at all are all refused rather than passed. BEAM is detected by a
+`rebar.config` or `mix.exs` in the root, so a BEAM repository that also carries a
+`package.json` is checked against its Erlang or Elixir versions only. When a
+`rebar.config` names several relx releases, the first one is what relx builds, so it is
+the one checked.
 
 ## Rebuilds
 

@@ -48,15 +48,20 @@ first_line() { head -1; }
 # that exists but names no literal version is printed with an empty version, so the
 # check refuses it instead of silently passing.
 read_versions() {
-  local root="$1" beam=0 f v relx_version="" relx_apps="" flat app
+  local root="$1" beam=0 f v relx_version="" relx_apps="" flat rest app
 
   if [ -f "$root/rebar.config" ]; then
     beam=1
-    # One line, so a release tuple spread over several lines still reads whole.
-    flat="$(tr '\n' ' ' < "$root/rebar.config")"
-    # {relx, [{release, {name, "x.y.z"}, [app1, app2]}, ...]}
-    relx_version="$(printf '%s' "$flat" | sed -n 's/.*{release,[[:space:]]*{[^,}]*,*[[:space:]]*"\([^"]*\)".*/\1/p')"
-    relx_apps="$(printf '%s' "$flat" | sed -n 's/.*{release,[[:space:]]*{[^,}]*,*[[:space:]]*"[^"]*"[[:space:]]*}[[:space:]]*,[[:space:]]*\[\([^]]*\)\].*/\1/p')"
+    # One line, so a release tuple spread over several lines still reads whole, and
+    # with the Erlang comments gone, so a tuple that was commented out is not read as
+    # the release this repository publishes. `%' runs to the end of its line, so the
+    # lines are stripped before they are joined.
+    flat="$(sed 's/%.*//' "$root/rebar.config" | tr '\n' ' ')"
+    # {relx, [{release, {name, "x.y.z"}, [app1, app2]}, ...]}: the FIRST tuple, which
+    # is the one relx builds when the config names several.
+    rest="${flat#*'{release,'}"
+    relx_version="$(printf '%s' "$rest" | sed -n 's/^[[:space:]]*{[^,}]*,*[[:space:]]*"\([^"]*\)".*/\1/p')"
+    relx_apps="$(printf '%s' "$rest" | sed -n 's/^[[:space:]]*{[^,}]*,*[[:space:]]*"[^"]*"[[:space:]]*}[[:space:]]*,[[:space:]]*\[\([^]]*\)\].*/\1/p')"
     # A library has no relx release and publishes its app's own vsn; a rebar.config
     # that names a release it will not spell as a literal is refused rather than
     # treated as absent.
@@ -67,15 +72,20 @@ read_versions() {
 
   # The apps the release names, when it names any: an umbrella app beside the release
   # (a helper at 0.1.0) is not what a box reports, and is not checked. Apps the relay
-  # names that this tree does not hold (sasl, kernel) are OTP's and are skipped.
+  # names that this tree does not hold (sasl, kernel) are OTP's and are skipped. The
+  # file is found by name rather than at the two paths relx usually uses, so an app in
+  # a tree laid out another way is still checked instead of quietly passing.
   if [ -n "$relx_apps" ]; then
     for app in $(printf '%s' "$relx_apps" | tr ',' ' '); do
       [ "$app" = "" ] && continue
-      for f in "$root/apps/$app/src/$app.app.src" "$root/src/$app.app.src"; do
-        [ -f "$f" ] || continue
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
         v="$(sed -n 's/.*{vsn,[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | first_line)"
         printf '%s\tapp.src vsn\t%s\n' "${f#"$root"/}" "$v"
-      done
+      done < <(find "$root" -name "$app.app.src" \
+                 -not -path '*/.git/*' -not -path '*/_build/*' \
+                 -not -path '*/deps/*' -not -path '*/_checkouts/*' \
+                 -not -path '*/node_modules/*' | sort)
     done
   else
     while IFS= read -r f; do

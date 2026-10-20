@@ -19,7 +19,9 @@ on:
     paths:
       - '.github/workflows/release-guard.yml'
       - '.github/workflows/release-guard-selftest.yml'
+      - '.github/workflows/attest-image.yml'
       - 'scripts/release_guard.sh'
+      - 'scripts/embed_release_guard.sh'
       - 'scripts/test_release_guard.sh'
   workflow_dispatch:
 

@@ -16,6 +16,10 @@ on:
     paths:
       - '.github/workflows/attest-image.yml'
       - '.github/workflows/attest-image-selftest.yml'
+      # The release checks are embedded in attest-image.yml, so a change to them
+      # changes what this workflow signs with.
+      - 'scripts/release_guard.sh'
+      - 'scripts/embed_release_guard.sh'
   workflow_dispatch:
 
 permissions:

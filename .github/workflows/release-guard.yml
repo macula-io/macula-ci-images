@@ -24,16 +24,22 @@
 #
 # Pin the call by FULL COMMIT SHA, as with attest-image.yml. The caller must grant
 # contents: read; both checks read the repository and nothing else. attest-image.yml
-# calls it, so every image release gets it as soon as the caller's pin moves.
+# carries the same two checks itself, so every image release gets them without a
+# second call.
 #
 # In attest-image the build has already pushed bytes by the time this runs: what the
 # guard stops there is the signing and both attestations, and a box refuses an image
 # that was not signed. A repository that wants the guard ahead of its build calls it
 # as its own first job.
 #
-# The checks live in scripts/release_guard.sh, which prints every version source it
-# read and every one that disagreed. scripts/test_release_guard.sh proves each refusal
-# and each pass on throwaway repositories and fixtures.
+# THE CHECKS LIVE IN THIS FILE, not in the caller's tree. A reusable workflow runs in
+# the CALLER's repository: ./scripts/release_guard.sh would not exist in 50 of 51
+# repositories (exit 127 on every release), and in the one that has it, a tag that
+# skipped review could carry its own copy and pick its own guard. The block below is
+# written from scripts/release_guard.sh by scripts/embed_release_guard.sh, and
+# scripts/test_release_guard.sh runs its cases against the block as embedded, so what
+# is tested is what a caller runs. attest-image.yml embeds the same block, and the same
+# test fails if the two differ by one byte.
 
 name: release guard
 
@@ -65,7 +71,8 @@ permissions:
   contents: read
 
 jobs:
-  on-branch:
+  # One job, because both checks read the same checkout of the commit being released.
+  guard:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +80,217 @@ jobs:
           # The ancestry check needs the tag and the default branch connected, which a
           # shallow checkout does not give.
           fetch-depth: 0
+          # The commit being released, so the version check reads the tagged tree and
+          # not whatever a branch happens to hold now. `all history for all branches
+          # and tags` above is what gives the ancestry check origin/<default>.
+          ref: ${{ inputs.sha || github.sha }}
+
+      - name: Write the checks
+        run: |
+          mkdir -p "$RUNNER_TEMP/guard"
+          cat > "$RUNNER_TEMP/guard/release_guard.sh" <<'RELEASE_GUARD_SCRIPT'
+          #!/usr/bin/env bash
+          # Refuse a release that must not happen. Two checks, both only for a v* tag, so a
+          # repository that builds on every main push keeps building:
+          #
+          #   on-branch <ref> <sha> <default-branch>
+          #       the tagged commit is an ancestor of origin/<default-branch>, so a release can
+          #       never again sit on a side branch while the default branch is behind it
+          #       (mcl_om 1.0.0, tagged on wire1-macula15, two commits ahead of main);
+          #
+          #   versions <ref> [root]
+          #       the tag's version is the version the repository will publish: every .app.src
+          #       vsn, the relx release version and mix.exs (BEAM), or the manifest the release
+          #       publishes (Cargo.toml, package.json, pyproject.toml, *.csproj). A box that
+          #       reports its release reads these, so a stale one publishes a lie (mcl-fovea
+          #       0.6.1 reporting 0.4.2).
+          #
+          # A ref that is not a tag named v<version> is not a release: both checks print that
+          # and exit 0. A release-only workflow that must refuse anything else asks for it with
+          # the workflow's `require-tag' input, not here.
+          #
+          # Exit: 0 pass, 1 refused, 2 the check could not be made.
+          #
+          # The version is compared as the tag spells it minus the leading v, so a pre-release
+          # tag v0.31.0-rc.6 matches an app version of 0.31.0-rc.6 and nothing else.
+          set -uo pipefail
+
+          prog="$(basename "$0")"
+          usage() {
+            echo "usage: $prog on-branch <ref> <sha> <default-branch>" >&2
+            echo "       $prog versions <ref> [root]" >&2
+            exit 2
+          }
+
+          # The version a ref names, or non-zero when the ref is not a release tag.
+          tag_version() {
+            local ref="$1"
+            case "$ref" in
+              refs/tags/v*) printf '%s\n' "${ref#refs/tags/v}" ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # The value after the last "=" or ":"-style separator on a matched pattern, used by
+          # the manifest readers below so each one stays a single sed or awk expression.
+          first_line() { head -1; }
+
+          # Every version source found, one "file<TAB>source<TAB>version" line each. A source
+          # that exists but names no literal version is printed with an empty version, so the
+          # check refuses it instead of silently passing.
+          read_versions() {
+            local root="$1" beam=0 f v relx_version="" relx_apps="" flat rest app
+
+            if [ -f "$root/rebar.config" ]; then
+              beam=1
+              # One line, so a release tuple spread over several lines still reads whole, and
+              # with the Erlang comments gone, so a tuple that was commented out is not read as
+              # the release this repository publishes. `%' runs to the end of its line, so the
+              # lines are stripped before they are joined.
+              flat="$(sed 's/%.*//' "$root/rebar.config" | tr '\n' ' ')"
+              # {relx, [{release, {name, "x.y.z"}, [app1, app2]}, ...]}: the FIRST tuple, which
+              # is the one relx builds when the config names several.
+              rest="${flat#*'{release,'}"
+              relx_version="$(printf '%s' "$rest" | sed -n 's/^[[:space:]]*{[^,}]*,*[[:space:]]*"\([^"]*\)".*/\1/p')"
+              relx_apps="$(printf '%s' "$rest" | sed -n 's/^[[:space:]]*{[^,}]*,*[[:space:]]*"[^"]*"[[:space:]]*}[[:space:]]*,[[:space:]]*\[\([^]]*\)\].*/\1/p')"
+              # A library has no relx release and publishes its app's own vsn; a rebar.config
+              # that names a release it will not spell as a literal is refused rather than
+              # treated as absent.
+              if [ -n "$relx_version" ] || printf '%s' "$flat" | grep -q '{release,'; then
+                printf '%s\trelx release\t%s\n' rebar.config "$relx_version"
+              fi
+            fi
+
+            # The apps the release names, when it names any: an umbrella app beside the release
+            # (a helper at 0.1.0) is not what a box reports, and is not checked. Apps the relay
+            # names that this tree does not hold (sasl, kernel) are OTP's and are skipped. The
+            # file is found by name rather than at the two paths relx usually uses, so an app in
+            # a tree laid out another way is still checked instead of quietly passing.
+            if [ -n "$relx_apps" ]; then
+              for app in $(printf '%s' "$relx_apps" | tr ',' ' '); do
+                [ "$app" = "" ] && continue
+                while IFS= read -r f; do
+                  [ -n "$f" ] || continue
+                  v="$(sed -n 's/.*{vsn,[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | first_line)"
+                  printf '%s\tapp.src vsn\t%s\n' "${f#"$root"/}" "$v"
+                done < <(find "$root" -name "$app.app.src" \
+                           -not -path '*/.git/*' -not -path '*/_build/*' \
+                           -not -path '*/deps/*' -not -path '*/_checkouts/*' \
+                           -not -path '*/node_modules/*' | sort)
+              done
+            else
+              while IFS= read -r f; do
+                beam=1
+                v="$(sed -n 's/.*{vsn,[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | first_line)"
+                printf '%s\tapp.src vsn\t%s\n' "${f#"$root"/}" "$v"
+              done < <(find "$root" -name '*.app.src' \
+                         -not -path '*/.git/*' -not -path '*/_build/*' \
+                         -not -path '*/deps/*' -not -path '*/_checkouts/*' -not -path '*/node_modules/*' | sort)
+            fi
+
+            if [ -f "$root/mix.exs" ]; then
+              beam=1
+              v="$(awk '/def project/ { seen = 1 }
+                        seen && match($0, /version:[[:space:]]*"[^"]*"/) {
+                          s = substr($0, RSTART, RLENGTH); sub(/^[^"]*"/, "", s); sub(/"$/, "", s)
+                          print s; exit }' "$root/mix.exs")"
+              printf '%s\tmix project version\t%s\n' mix.exs "$v"
+            fi
+
+            # Other stacks only when the tree is not a BEAM release: a docs site's package.json
+            # in a BEAM repository is not what the release publishes.
+            if [ "$beam" -eq 0 ]; then
+              if [ -f "$root/Cargo.toml" ]; then
+                v="$(awk '/^\[package\]/ { p = 1 } p && /^[[:space:]]*version[[:space:]]*=/ {
+                          s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' "$root/Cargo.toml")"
+                printf '%s\tpackage version\t%s\n' Cargo.toml "$v"
+              fi
+              if [ -f "$root/package.json" ]; then
+                v="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$root/package.json" | first_line)"
+                printf '%s\tpackage version\t%s\n' package.json "$v"
+              fi
+              if [ -f "$root/pyproject.toml" ]; then
+                v="$(awk '/^[[:space:]]*version[[:space:]]*=/ {
+                          s = $0; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); print s; exit }' "$root/pyproject.toml")"
+                printf '%s\tproject version\t%s\n' pyproject.toml "$v"
+              fi
+              while IFS= read -r f; do
+                v="$(sed -n 's/.*<Version>[[:space:]]*\([^<]*\)<.*/\1/p' "$f" | first_line)"
+                printf '%s\tassembly version\t%s\n' "${f#"$root"/}" "$v"
+              done < <(find "$root" -name '*.csproj' -not -path '*/.git/*' -not -path '*/bin/*' -not -path '*/obj/*' | sort)
+            fi
+          }
+
+          check_on_branch() {
+            local ref="$1" sha="$2" default="$3" version
+
+            if ! version="$(tag_version "$ref")"; then
+              echo "release guard: $ref is not a release tag, so the commit may be anywhere"
+              return 0
+            fi
+
+            if ! git rev-parse --verify --quiet "origin/$default^{commit}" > /dev/null; then
+              echo "release guard: origin/$default is not in this checkout; fetch the default" >&2
+              echo "release guard: branch with fetch-depth: 0 before calling the guard" >&2
+              return 2
+            fi
+
+            if git merge-base --is-ancestor "$sha" "origin/$default"; then
+              echo "release guard: ok, $sha is on origin/$default (tag v$version)"
+              return 0
+            fi
+
+            echo "release guard: REFUSED, tag v$version names $sha, which is not an ancestor of"
+            echo "release guard: origin/$default. A release built from a side branch leaves the"
+            echo "release to be cut again from the default branch:"
+            git log --oneline "origin/$default..$sha" | sed 's/^/release guard:   only on the tag: /'
+            printf '%s is not on origin/%s\n' "${sha:0:12}" "$default"
+            return 1
+          }
+
+          check_versions() {
+            local ref="$1" root="${2:-.}" version lines found=0 bad=0 file source found_version
+
+            if ! version="$(tag_version "$ref")"; then
+              echo "release guard: $ref is not a release tag, so no version is published"
+              return 0
+            fi
+
+            lines="$(read_versions "$root")"
+            if [ -z "$lines" ]; then
+              echo "release guard: REFUSED, v$version names a release but $root holds no version" >&2
+              echo "release guard: (no .app.src, rebar.config relx, mix.exs, Cargo.toml," >&2
+              echo "release guard: package.json, pyproject.toml or *.csproj)" >&2
+              return 1
+            fi
+
+            while IFS=$'\t' read -r file source found_version; do
+              found=$((found + 1))
+              if [ -z "$found_version" ]; then
+                echo "release guard: FAIL $file names no literal $source"
+                bad=$((bad + 1))
+              elif [ "$found_version" = "$version" ]; then
+                echo "release guard: ok   $file $source $found_version"
+              else
+                echo "release guard: FAIL $file $source $found_version, tag says $version"
+                bad=$((bad + 1))
+              fi
+            done <<< "$lines"
+
+            if [ "$bad" -ne 0 ]; then
+              printf 'v%s disagrees with %s of %s version sources\n' "$version" "$bad" "$found"
+              return 1
+            fi
+            echo "release guard: ok, v$version is what all $found version sources publish"
+            return 0
+          }
+
+          case "${1:-}" in
+            on-branch) shift; [ $# -eq 3 ] || usage; check_on_branch "$@" ;;
+            versions)  shift; [ $# -ge 1 ] && [ $# -le 2 ] || usage; check_versions "$@" ;;
+            *) usage ;;
+          esac
+          RELEASE_GUARD_SCRIPT
 
       - name: The ref must be a release tag when this caller says so
         if: ${{ inputs.require-tag }}
@@ -83,42 +301,22 @@ jobs:
             refs/tags/v*) ;;
             *) echo "::error::this release workflow runs only on a v* tag, got '$REF'"; exit 1 ;;
           esac
-
-      # The default branch's name, so a repository that renames it needs no change here.
-      - name: Which branch is the default one
-        env:
-          API: ${{ github.api_url }}/repos/${{ github.repository }}
-          TOKEN: ${{ github.token }}
-        run: |
-          branch="$(curl -fsSL -H "Authorization: Bearer $TOKEN" \
-                    -H 'Accept: application/vnd.github+json' "$API" \
-                    | sed -n 's/^[[:space:]]*"default_branch":[[:space:]]*"\([^"]*\)".*/\1/p')"
-          [ -n "$branch" ] || { echo "::error::could not read the default branch from $API"; exit 1; }
-          echo "the default branch is $branch"
-          echo "DEFAULT_BRANCH=$branch" >> "$GITHUB_ENV"
 
       - name: The tagged commit must be on the default branch
         env:
           REF: ${{ inputs.ref || github.ref }}
           SHA: ${{ inputs.sha || github.sha }}
-        run: ./scripts/release_guard.sh on-branch "$REF" "$SHA" "$DEFAULT_BRANCH"
-
-  versions:
-    runs-on: ${{ fromJSON(inputs.runs-on) }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: The ref must be a release tag when this caller says so
-        if: ${{ inputs.require-tag }}
-        env:
-          REF: ${{ inputs.ref || github.ref }}
+          # The caller's own default branch, from the event that started this run, so a
+          # repository that renames it needs no change here and no API call is made.
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          case "$REF" in
-            refs/tags/v*) ;;
-            *) echo "::error::this release workflow runs only on a v* tag, got '$REF'"; exit 1 ;;
-          esac
+          if [ -z "$DEFAULT_BRANCH" ] && [ "${REF#refs/tags/v}" != "$REF" ]; then
+            echo "::error::the event payload names no default branch, so a release tag cannot be checked"
+            exit 1
+          fi
+          bash "$RUNNER_TEMP/guard/release_guard.sh" on-branch "$REF" "$SHA" "$DEFAULT_BRANCH"
 
-      - name: The tag's version must be the one the repository publishes
+      - name: The tag's version must be the one this repository publishes
         env:
           REF: ${{ inputs.ref || github.ref }}
-        run: ./scripts/release_guard.sh versions "$REF"
+        run: bash "$RUNNER_TEMP/guard/release_guard.sh" versions "$REF"
