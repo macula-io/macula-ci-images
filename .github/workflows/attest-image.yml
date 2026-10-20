@@ -3,6 +3,9 @@
 # This exists so a box can refuse any image that did not come from our CI, built from
 # our commit: the fleet reconciler verifies these three things before it runs a digest.
 #
+# Before anything is signed it runs release-guard.yml: the tag must name a commit on
+# the default branch, and must be the version this repository publishes.
+#
 # CALL IT from the job after the one that pushed the image, with that image's digest:
 #
 #   attest:
@@ -60,7 +63,19 @@ permissions:
   contents: read
 
 jobs:
+  # Nothing is signed until the release itself is shown to be sound: the tag on the
+  # default branch, and its version the one this repository publishes. The bytes may
+  # already be in the registry by now (the caller builds first), but a box refuses an
+  # image that was not signed, so this is where a bad release stops.
+  guard:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-guard.yml
+    with:
+      runs-on: ${{ inputs.runs-on }}
+
   attest:
+    needs: guard
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       contents: read

@@ -200,6 +200,37 @@ with `--type spdxjson` and with `--type slsaprovenance1`.
 `attest-image-selftest.yml` proves any change to it on a throwaway one-file image
 (`ghcr.io/macula-io/attest-image-selftest`) before a service calls it.
 
+## Refusing a bad release: `release-guard.yml`
+
+A reusable workflow that refuses a `v*` tag which must not be released. It runs
+`attest-image.yml` before anything is signed, so every image release gets it, and a
+release-only workflow (hex, crates.io, npm, PyPI, NuGet) can call it as its first job.
+Any other ref passes untouched, so a repository that builds on every `main` push keeps
+building.
+
+1. **The tag is on the default branch.** The tagged commit must be an ancestor of
+   `origin/<default branch>`. `mcl_om` 1.0.0, the version every service depends on, was
+   tagged on a side branch two commits ahead of `main`, and nothing noticed.
+2. **The tag is the version the repository publishes.** BEAM: the relx release version
+   and the `vsn` of every app the release names (a helper app beside the release is not
+   checked). Elsewhere: the manifest the release publishes, `Cargo.toml`,
+   `package.json`, `pyproject.toml` or `*.csproj`. `mcl-fovea` 0.6.1 shipped a relx
+   version of 0.4.2, so a box reporting its release reported the wrong one.
+
+```yaml
+guard:
+  permissions: { contents: read }
+  uses: macula-io/macula-ci-images/.github/workflows/release-guard.yml@<full commit sha>
+  with:
+    require-tag: true                          # release-only workflows; optional
+    runs-on: '["self-hosted","pq"]'            # private repos; public ones omit it
+```
+
+The checks are `scripts/release_guard.sh`, which prints every version source it read
+and every one that disagreed. `scripts/test_release_guard.sh` proves each refusal and
+each pass on throwaway repositories and fixtures, and `release-guard-selftest.yml`
+runs it on every change to either file, plus one call of the workflow itself.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

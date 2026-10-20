@@ -1,0 +1,45 @@
+# Prove release-guard.yml before any repository calls it.
+#
+# Two jobs. `script` runs scripts/test_release_guard.sh, which builds throwaway
+# repositories and fixtures and states, case by case, the exit code the guard must
+# return: a tag on a side-branch commit is refused, a tag on the default branch
+# passes, a stale relx release version is refused, a consistent tree passes. A run is
+# green only when every refusal and every pass happens, so the red paths are exercised
+# on every push rather than argued about.
+#
+# `wired` calls release-guard.yml itself, from this branch, which is not a v* tag: it
+# proves the call shape and the permissions this repository's own workflows need. The
+# refusing path cannot be shown from here, because a called workflow that fails fails
+# the calling job; the script job above is where red is shown.
+
+name: release guard self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/release-guard.yml'
+      - '.github/workflows/release-guard-selftest.yml'
+      - 'scripts/release_guard.sh'
+      - 'scripts/test_release_guard.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-guard-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Every refusal and every pass, on throwaway repositories
+        run: ./scripts/test_release_guard.sh
+
+  wired:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-guard.yml
