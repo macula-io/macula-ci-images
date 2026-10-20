@@ -308,5 +308,23 @@ cp "$WORK/npm-ok/package.json" "$WORK/unrelated-tag/package.json"
 run_case "a tag that is not v<version> publishes nothing and passes" 0 \
   "$GUARD" versions refs/tags/ip2asn-20261006T090019Z "$WORK/unrelated-tag"
 
+# versions: none, the declaration a Go caller makes (macula-go, mcl-fovea-keeper): the
+# tag is the version and no file carries one. It skips the version check only when the
+# caller says so, and the on-branch check refuses an off-branch tag all the same.
+mkdir -p "$WORK/go"
+printf 'module example.invalid/thing\n\ngo 1.23\n' > "$WORK/go/go.mod"
+run_case "a Go tree with no version source is refused by default" 1 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/go"
+run_case "a Go tree declared versions none passes the version check" 0 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/go" none
+run_case "versions check is the default, spelled out" 1 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/go" check
+run_case "versions none does not let an off-branch tag through" 1 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v1.2.3 "$OFF_MAIN" main
+run_case "a versions value that is neither check nor none cannot be checked" 2 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/go" skip
+run_case "an empty versions value is the default check, not none" 1 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/go" ""
+
 printf '\n%s cases, %s failed\n' "$cases" "$failures"
 [ "$failures" -eq 0 ]

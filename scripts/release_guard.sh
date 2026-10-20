@@ -10,12 +10,15 @@
 #       maintenance branch that line's own tag names (v0.10.4 on release-0.10), and
 #       no other branch;
 #
-#   versions <ref> [root]
+#   versions <ref> [root] [check|none]
 #       the tag's version is the version the repository will publish: every .app.src
 #       vsn, the relx release version and mix.exs (BEAM), or the manifest the release
 #       publishes (Cargo.toml, package.json, pyproject.toml, *.csproj). A box that
 #       reports its release reads these, so a stale one publishes a lie (mcl-fovea
-#       0.6.1 reporting 0.4.2).
+#       0.6.1 reporting 0.4.2). `none' is a caller's declaration that the tag IS the
+#       version and no file carries one (Go: go.mod names no version); the check then
+#       prints that and passes. It never comes from a default, and it leaves the
+#       on-branch check exactly as it is.
 #
 # A ref that is not a tag named v<version> is not a release: both checks print that
 # and exit 0. A release-only workflow that must refuse anything else asks for it with
@@ -30,7 +33,7 @@ set -uo pipefail
 prog="$(basename "$0")"
 usage() {
   echo "usage: $prog on-branch <ref> <sha> <default-branch>" >&2
-  echo "       $prog versions <ref> [root]" >&2
+  echo "       $prog versions <ref> [root] [check|none]" >&2
   exit 2
 }
 
@@ -186,7 +189,18 @@ check_on_branch() {
 }
 
 check_versions() {
-  local ref="$1" root="${2:-.}" version lines found=0 bad=0 file source found_version
+  local ref="$1" root="${2:-.}" mode="${3:-check}" version lines found=0 bad=0 file source found_version
+
+  case "$mode" in
+    check) ;;
+    none)
+      echo "release guard: versions: none, declared by the caller: the tag is the version,"
+      echo "release guard: no file carries one, so none is compared (the tag must still be on its branch)"
+      return 0 ;;
+    *)
+      echo "release guard: versions must be check or none, got '$mode'" >&2
+      return 2 ;;
+  esac
 
   if ! version="$(tag_version "$ref")"; then
     echo "release guard: $ref is not a release tag, so no version is published"
@@ -224,6 +238,6 @@ check_versions() {
 
 case "${1:-}" in
   on-branch) shift; [ $# -eq 3 ] || usage; check_on_branch "$@" ;;
-  versions)  shift; [ $# -ge 1 ] && [ $# -le 2 ] || usage; check_versions "$@" ;;
+  versions)  shift; [ $# -ge 1 ] && [ $# -le 3 ] || usage; check_versions "$@" ;;
   *) usage ;;
 esac

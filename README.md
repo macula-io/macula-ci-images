@@ -236,6 +236,13 @@ repository root: macula-portal keeps its umbrella `mix.exs` in `system/`. Read f
 root, that tree holds no version and the release is refused. `attest-image.yml` takes
 the same input.
 
+`versions: none` is a declaration, for a repository whose version is the tag itself and
+appears in no file: a Go module (macula-go, mcl-fovea-keeper), where `go.mod` names no
+version. The version check then prints that the caller declared it and passes; the tag
+must still be on its branch. It is never a default: a Go tree that does not say so is
+refused for holding no version, and any value other than `check` or `none` stops the
+guard. `attest-image.yml` takes the same input, and the caller passes it to both.
+
 The checks are `scripts/release_guard.sh`, which prints every version source it read
 and every one that disagreed. They travel inside the workflow rather than being read
 from the caller's tree: a reusable workflow runs in the caller's repository, so

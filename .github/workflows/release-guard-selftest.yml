@@ -45,3 +45,12 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/release-guard.yml
+
+  # The declaration a Go caller makes: the workflow accepts it and still runs the
+  # on-branch check (on a branch push both pass; the refusals are cases in the script).
+  wired-versions-none:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-guard.yml
+    with:
+      versions: none
