@@ -133,6 +133,31 @@ git -C "$REPO" fetch -q origin --tags
 run_case "a tag named origin/main cannot stand in for the default branch" 1 \
   env -C "$REPO" "$GUARD" on-branch refs/tags/v1.2.3 "$OFF_MAIN" main
 
+# A hotfix on an older line sits on that line's maintenance branch, release-<major>.<minor>,
+# off the default branch (macula-station release-0.10, macula-realm release-0.3). The tag
+# names the branch; nothing the caller passes does, so a tag on another line's branch, or
+# on any other side branch, is still refused.
+git -C "$REPO" switch -q -c release-0.10 "$ON_MAIN"
+printf 'hotfix\n' >> "$REPO/file"
+git -C "$REPO" commit -qam "a hotfix only the maintenance branch has"
+ON_MAINT="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" switch -q main
+git -C "$REPO" fetch -q origin "+refs/heads/*:refs/remotes/origin/*"
+run_case "a hotfix tag on its own maintenance branch passes" 0 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v0.10.4 "$ON_MAINT" main
+run_case "a pre-release hotfix tag on its maintenance branch passes" 0 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v0.10.4-rc.1 "$ON_MAINT" main
+run_case "a tag of another line on that maintenance branch is refused" 1 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v0.11.0 "$ON_MAINT" main
+run_case "a tag of the line on a side branch is still refused" 1 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v0.10.4 "$OFF_MAIN" main
+# As with origin/main: a tag named after the maintenance branch cannot stand in for it.
+git -C "$REPO" update-ref refs/tags/origin/release-0.9 "$OFF_MAIN"
+git -C "$REPO" update-ref refs/tags/release-0.9 "$OFF_MAIN"
+git -C "$REPO" fetch -q origin --tags
+run_case "a tag named after a maintenance branch cannot stand in for it" 1 \
+  env -C "$REPO" "$GUARD" on-branch refs/tags/v0.9.1 "$OFF_MAIN" main
+
 NODEFAULT="$WORK/repo-without-origin"
 git init -q -b main "$NODEFAULT" && touch "$NODEFAULT/file"
 run_case "a checkout without the default branch cannot be checked" 2 \
@@ -185,6 +210,17 @@ run_case "a mix project whose version agrees passes" 0 \
   "$GUARD" versions refs/tags/v0.2.0 "$WORK/beam-mix"
 run_case "a mix project whose version disagrees is refused" 1 \
   "$GUARD" versions refs/tags/v0.2.1 "$WORK/beam-mix"
+
+# An umbrella kept below the repository root (macula-portal holds its mix.exs in
+# system/): the caller names the directory, and the root alone holds no version.
+mkdir -p "$WORK/umbrella-below/system"
+cp "$WORK/beam-mix/mix.exs" "$WORK/umbrella-below/system/mix.exs"
+run_case "a version root below the repository root is read" 0 \
+  env -C "$WORK/umbrella-below" "$GUARD" versions refs/tags/v0.2.0 system
+run_case "a version root below the root that disagrees is refused" 1 \
+  env -C "$WORK/umbrella-below" "$GUARD" versions refs/tags/v0.2.1 system
+run_case "the same tree read from its root holds no version" 1 \
+  env -C "$WORK/umbrella-below" "$GUARD" versions refs/tags/v0.2.0
 
 # A library: rebar.config, no relx release, so the app's own vsn is what ships.
 mkdir -p "$WORK/beam-library/src"

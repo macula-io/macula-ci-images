@@ -5,7 +5,10 @@
 #   on-branch <ref> <sha> <default-branch>
 #       the tagged commit is an ancestor of origin/<default-branch>, so a release can
 #       never again sit on a side branch while the default branch is behind it
-#       (mcl_om 1.0.0, tagged on wire1-macula15, two commits ahead of main);
+#       (mcl_om 1.0.0, tagged on wire1-macula15, two commits ahead of main); or, for a
+#       hotfix on an older line, an ancestor of origin/release-<major>.<minor>, the
+#       maintenance branch that line's own tag names (v0.10.4 on release-0.10), and
+#       no other branch;
 #
 #   versions <ref> [root]
 #       the tag's version is the version the repository will publish: every .app.src
@@ -38,6 +41,12 @@ tag_version() {
     refs/tags/v*) printf '%s\n' "${ref#refs/tags/v}" ;;
     *) return 1 ;;
   esac
+}
+
+# The maintenance branch a version belongs to, release-<major>.<minor>, or nothing
+# when the version does not start with two numbers.
+maintenance_branch() {
+  printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\)\..*/release-\1.\2/p'
 }
 
 # The value after the last "=" or ":"-style separator on a matched pattern, used by
@@ -131,7 +140,7 @@ read_versions() {
 }
 
 check_on_branch() {
-  local ref="$1" sha="$2" default="$3" version default_ref
+  local ref="$1" sha="$2" default="$3" version default_ref maint
 
   if ! version="$(tag_version "$ref")"; then
     echo "release guard: $ref is not a release tag, so the commit may be anywhere"
@@ -157,9 +166,20 @@ check_on_branch() {
     return 0
   fi
 
+  # A hotfix on an older line is cut from that line's maintenance branch, and the tag
+  # alone names which one: v0.10.4 may sit on release-0.10, never on release-0.11 or
+  # on a branch the caller names, so a workflow file on the tagged commit cannot pick
+  # its own. Named in full for the same reason as the default branch.
+  maint="$(maintenance_branch "$version")"
+  if [ -n "$maint" ] && git rev-parse --verify --quiet "refs/remotes/origin/$maint^{commit}" > /dev/null \
+     && git merge-base --is-ancestor "$sha" "refs/remotes/origin/$maint"; then
+    echo "release guard: ok, $sha is on origin/$maint, the maintenance branch of v$version"
+    return 0
+  fi
+
   echo "release guard: REFUSED, tag v$version names $sha, which is not an ancestor of"
-  echo "release guard: origin/$default. A release built from a side branch leaves the"
-  echo "release to be cut again from the default branch:"
+  echo "release guard: origin/$default${maint:+ or origin/$maint}. A release built from a"
+  echo "release guard: side branch leaves the release to be cut again from the default branch:"
   git log --oneline "$default_ref..$sha" | sed 's/^/release guard:   only on the tag: /'
   printf '%s is not on origin/%s\n' "${sha:0:12}" "$default"
   return 1

@@ -210,7 +210,11 @@ building.
 
 1. **The tag is on the default branch.** The tagged commit must be an ancestor of
    `origin/<default branch>`. `mcl_om` 1.0.0, the version every service depends on, was
-   tagged on a side branch two commits ahead of `main`, and nothing noticed.
+   tagged on a side branch two commits ahead of `main`, and nothing noticed. A hotfix
+   on an older line may instead sit on that line's maintenance branch,
+   `release-<major>.<minor>`, which the tag itself names: `v0.10.4` passes on
+   `release-0.10` (macula-station) and `v0.3.15` on `release-0.3` (macula-realm), and
+   nothing else does. The caller cannot name another branch.
 2. **The tag is the version the repository publishes.** BEAM: the relx release version
    and the `vsn` of every app the release names (a helper app beside the release is not
    checked). Elsewhere: the manifest the release publishes, `Cargo.toml`,
@@ -224,7 +228,13 @@ guard:
   with:
     require-tag: true                          # release-only workflows; optional
     runs-on: '["self-hosted","pq"]'            # private repos; public ones omit it
+    version-root: system                       # versions below the root; optional
 ```
+
+`version-root` names the directory that holds the version sources when it is not the
+repository root: macula-portal keeps its umbrella `mix.exs` in `system/`. Read from the
+root, that tree holds no version and the release is refused. `attest-image.yml` takes
+the same input.
 
 The checks are `scripts/release_guard.sh`, which prints every version source it read
 and every one that disagreed. They travel inside the workflow rather than being read
