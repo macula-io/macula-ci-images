@@ -218,11 +218,12 @@ building.
 2. **The tag is the version the repository publishes.** BEAM: the relx release version
    and the `vsn` of every app the release names (a helper app beside the release is not
    checked). Elsewhere: the manifest the release publishes, `Cargo.toml` (`[package]`
-   version, or `[workspace.package]` version for a workspace root or a crate that
-   inherits it), `package.json`, `pyproject.toml` or every `*.csproj` that packs
-   (`<Version>`, or `<VersionPrefix>` plus any `<VersionSuffix>`, from the project or
-   the root `Directory.Build.props`; a project with `<IsPackable>false</IsPackable>` is
-   not read). `mcl-fovea` 0.6.1 shipped a relx
+   version, or `[workspace.package]` version for a crate that inherits it; a virtual
+   workspace root also has every member crate read, since it publishes them all),
+   `package.json`, `pyproject.toml` or every `*.csproj` that packs (`<Version>`, or
+   `<VersionPrefix>` plus any `<VersionSuffix>`, from the project or the nearest
+   `Directory.Build.props` above it, the one MSBuild imports; a project with
+   `<IsPackable>false</IsPackable>` is not read). `mcl-fovea` 0.6.1 shipped a relx
    version of 0.4.2, so a box reporting its release reported the wrong one.
 
 ```yaml

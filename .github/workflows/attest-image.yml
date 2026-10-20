@@ -184,7 +184,7 @@ jobs:
           # that exists but names no literal version is printed with an empty version, so the
           # check refuses it instead of silently passing.
           read_versions() {
-            local root="$1" beam=0 f v relx_version="" relx_apps="" flat rest app
+            local root="$1" beam=0 f v relx_version="" relx_apps="" flat rest app props
 
             if [ -f "$root/rebar.config" ]; then
               beam=1
@@ -248,7 +248,7 @@ jobs:
             # in a BEAM repository is not what the release publishes.
             if [ "$beam" -eq 0 ]; then
               if [ -f "$root/Cargo.toml" ]; then
-                cargo_version "$root/Cargo.toml"
+                cargo_versions "$root"
               fi
               if [ -f "$root/package.json" ]; then
                 v="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$root/package.json" | first_line)"
@@ -260,37 +260,86 @@ jobs:
                 printf '%s\tproject version\t%s\n' pyproject.toml "$v"
               fi
               # Every project that packs: <Version>, or <VersionPrefix> with any <VersionSuffix>
-              # (what dotnet pack stamps), from the project or else from a root
-              # Directory.Build.props. A project marked <IsPackable>false</IsPackable> (a test, an
-              # example) publishes nothing and is not read.
+              # (what dotnet pack stamps), from the project or else from the NEAREST
+              # Directory.Build.props between it and the root, the one MSBuild imports. A project
+              # marked <IsPackable>false</IsPackable> (a test, an example) publishes nothing and
+              # is not read.
               while IFS= read -r f; do
                 grep -Eqi '<IsPackable>[[:space:]]*false[[:space:]]*</IsPackable>' "$f" && continue
                 v="$(dotnet_version "$f")"
-                [ -z "$v" ] && [ -f "$root/Directory.Build.props" ] && v="$(dotnet_version "$root/Directory.Build.props")"
+                if [ -z "$v" ]; then
+                  props="$(nearest_build_props "$root" "$(dirname "$f")")"
+                  [ -n "$props" ] && v="$(dotnet_version "$props")"
+                fi
                 printf '%s\tassembly version\t%s\n' "${f#"$root"/}" "$v"
               done < <(find "$root" -name '*.csproj' -not -path '*/.git/*' -not -path '*/bin/*' -not -path '*/obj/*' | sort)
             fi
           }
 
           # Cargo.toml's published version, one "file<TAB>source<TAB>version" line: [package]
-          # version, or [workspace.package] version when the package says version.workspace =
-          # true or the root is a workspace with no [package] (macula-pqc releases every crate
-          # at the workspace's one version). Each key is read only inside its own table, so a
-          # version in [dependencies.x] is never taken for the package's.
+          # version, or [workspace.package] version when the package inherits it
+          # (version.workspace = true, or version = { workspace = true }) or the root is a
+          # workspace with no [package] (macula-pqc releases every crate at the workspace's one
+          # version). Each key is read only inside its own table, so a version in
+          # [dependencies.x] is never taken for the package's.
+          #
+          # cargo_version <Cargo.toml> <name to print> [workspace version]
+          # With a workspace version, the file is a member of a virtual workspace: an inheriting
+          # member reports that version, one with its own reports its own, one with no
+          # [package] (a nested workspace) prints nothing.
           cargo_version() {
-            awk '
+            awk -v name="$2" -v member="${3+1}" -v given="${3-}" '
               function value(line,   s) { s = line; sub(/^[^"]*"/, "", s); sub(/".*/, "", s); return s }
               /^[[:space:]]*\[/ { table = $0; gsub(/[[:space:]]/, "", table); next }
-              table == "[package]" && /^[[:space:]]*version[[:space:]]*=/ { pkg = value($0); has_pkg = 1 }
-              table == "[package]" && /^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true/ { inherit = 1 }
               table == "[package]" { in_pkg = 1 }
+              table == "[package]" && /^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true/ { inherit = 1; next }
+              table == "[package]" && /^[[:space:]]*version[[:space:]]*=[[:space:]]*\{/ {
+                if ($0 ~ /workspace[[:space:]]*=[[:space:]]*true/) inherit = 1
+                next }
+              table == "[package]" && /^[[:space:]]*version[[:space:]]*=/ { pkg = value($0); has_pkg = 1 }
               table == "[workspace.package]" && /^[[:space:]]*version[[:space:]]*=/ { ws = value($0); has_ws = 1 }
               END {
-                if (has_pkg)                     printf "Cargo.toml\tpackage version\t%s\n", pkg
-                else if (in_pkg && !inherit)     printf "Cargo.toml\tpackage version\t\n"
-                else if (has_ws)                 printf "Cargo.toml\tworkspace.package version\t%s\n", ws
-                else                             printf "Cargo.toml\t%s version\t\n", (inherit ? "inherited workspace" : "package")
+                if (member) {
+                  if (has_pkg)      printf "%s\tpackage version\t%s\n", name, pkg
+                  else if (inherit) printf "%s\tinherited workspace version\t%s\n", name, given
+                  else if (in_pkg)  printf "%s\tpackage version\t\n", name
+                  exit
+                }
+                if (has_pkg)                     printf "%s\tpackage version\t%s\n", name, pkg
+                else if (in_pkg && !inherit)     printf "%s\tpackage version\t\n", name
+                else if (has_ws)                 printf "%s\tworkspace.package version\t%s\n", name, ws
+                else                             printf "%s\t%s version\t\n", name, (inherit ? "inherited workspace" : "package")
               }' "$1"
+          }
+
+          # A virtual workspace (a root with [workspace.package] and no [package]) publishes
+          # every member crate, so each member's version is a version source too: an inheriting
+          # member reports the workspace's, one with its own reports that, and a member that
+          # drifts from the tag is refused. A root that is itself a package (macula-rust, whose
+          # FFI member is versioned on its own line) publishes only the root crate.
+          cargo_versions() {
+            local root="$1" line ws f
+            line="$(cargo_version "$root/Cargo.toml" Cargo.toml)"
+            printf '%s\n' "$line"
+            case "$line" in
+              *$'\t'"workspace.package version"$'\t'*) ws="${line##*$'\t'}" ;;
+              *) return 0 ;;
+            esac
+            while IFS= read -r f; do
+              cargo_version "$f" "${f#"$root"/}" "$ws"
+            done < <(find "$root" -mindepth 2 -name Cargo.toml \
+                       -not -path '*/.git/*' -not -path '*/target/*' | sort)
+          }
+
+          # nearest_build_props <root> <dir>: the Directory.Build.props MSBuild imports for a
+          # project in <dir>, the first one walking up from <dir> to <root>, or nothing.
+          nearest_build_props() {
+            local root="$1" dir="$2"
+            while :; do
+              if [ -f "$dir/Directory.Build.props" ]; then printf '%s\n' "$dir/Directory.Build.props"; return; fi
+              [ "$dir" = "$root" ] && return
+              case "$dir" in "$root"/*) dir="$(dirname "$dir")" ;; *) return ;; esac
+            done
           }
 
           # The version an MSBuild file stamps on a package: <Version> when it names one, else

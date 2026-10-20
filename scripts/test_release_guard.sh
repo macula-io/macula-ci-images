@@ -371,6 +371,25 @@ printf '{application, helper, [{vsn, "1"}]}.\n' > "$WORK/rust-with-helper/script
 run_case "an Erlang helper below a Cargo root does not make it BEAM" 0 \
   "$GUARD" versions refs/tags/v0.11.0-rc.1 "$WORK/rust-with-helper"
 
+# A virtual workspace publishes every member crate: one with its own version is a
+# version source too (Mercurius, on fd7df54: it passed unchecked).
+mkdir -p "$WORK/cargo-ws-members/crates/a" "$WORK/cargo-ws-members/crates/b" "$WORK/cargo-ws-members/target/x"
+printf '[workspace]\nmembers = ["crates/*"]\n\n[workspace.package]\nversion = "1.2.3"\n' \
+  > "$WORK/cargo-ws-members/Cargo.toml"
+printf '[package]\nname = "a"\nversion.workspace = true\n' > "$WORK/cargo-ws-members/crates/a/Cargo.toml"
+printf '[package]\nname = "b"\nversion = { workspace = true }\n' > "$WORK/cargo-ws-members/crates/b/Cargo.toml"
+printf '[package]\nname = "build-output"\nversion = "9.9.9"\n' > "$WORK/cargo-ws-members/target/x/Cargo.toml"
+run_case "workspace members that inherit (both spellings) pass" 0 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/cargo-ws-members"
+printf '[package]\nname = "a"\nversion = "0.1.0"\n' > "$WORK/cargo-ws-members/crates/a/Cargo.toml"
+run_case "a workspace member with its own version that disagrees is refused" 1 \
+  "$GUARD" versions refs/tags/v1.2.3 "$WORK/cargo-ws-members"
+mkdir -p "$WORK/cargo-root-pkg/ffi"
+printf '[package]\nname = "core"\nversion = "0.11.0"\n\n[workspace]\nmembers = ["ffi"]\n' > "$WORK/cargo-root-pkg/Cargo.toml"
+printf '[package]\nname = "ffi"\nversion = "0.9.0"\n' > "$WORK/cargo-root-pkg/ffi/Cargo.toml"
+run_case "a root crate's own line is not held to its members' versions" 0 \
+  "$GUARD" versions refs/tags/v0.11.0 "$WORK/cargo-root-pkg"
+
 # --- .NET <VersionPrefix> (reckon-dotnet), and projects that pack nothing ------------
 mkdir -p "$WORK/net-prefix/src/Lib" "$WORK/net-prefix/test/Lib.Tests"
 printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n    <VersionPrefix>0.1.0</VersionPrefix>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include="X" Version="9.9.9" />\n  </ItemGroup>\n</Project>\n' \
@@ -393,6 +412,22 @@ printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n  </Proper
   > "$WORK/net-props/src/Lib/Lib.csproj"
 run_case "a packing project with no version reads Directory.Build.props" 0 \
   "$GUARD" versions refs/tags/v0.4.0 "$WORK/net-props"
+# MSBuild imports the NEAREST Directory.Build.props, not the root's (Mercurius, on
+# fd7df54: pack stamps 2.0.0 while the guard read 1.0.0).
+mkdir -p "$WORK/net-nested/src/Lib"
+printf '<Project>\n  <PropertyGroup>\n    <Version>1.0.0</Version>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-nested/Directory.Build.props"
+printf '<Project>\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-nested/src/Directory.Build.props"
+printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n  </PropertyGroup>\n</Project>\n' \
+  > "$WORK/net-nested/src/Lib/Lib.csproj"
+run_case "the root props is not read past a nearer Directory.Build.props" 1 \
+  "$GUARD" versions refs/tags/v1.0.0 "$WORK/net-nested"
+run_case "the nearest Directory.Build.props is the one read" 0 \
+  "$GUARD" versions refs/tags/v2.0.0 "$WORK/net-nested"
+run_case "the nearest props is found from the repository root as ." 0 \
+  env -C "$WORK/net-nested" "$GUARD" versions refs/tags/v2.0.0 .
+
 mkdir -p "$WORK/net-none"
 printf '<Project>\n  <PropertyGroup>\n    <PackageId>Lib</PackageId>\n  </PropertyGroup>\n</Project>\n' \
   > "$WORK/net-none/Lib.csproj"
