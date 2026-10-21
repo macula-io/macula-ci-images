@@ -464,14 +464,68 @@ def case_php_refuses_a_redefined_packagist(module):
         raise AssertionError(f"a mirror was accepted as packagist: {repositories}")
 
 
-def case_php_allows_packagist_defined_at_its_own_url(module):
-    """Naming packagist at its own URL changes nothing, so it is not refused."""
+def case_php_refuses_a_filtered_packagist(module):
+    """Composer filters a repository's advisory list by exclude, only and filter
+    BEFORE it answers (FilterRepository::getSecurityAdvisories), so a packagist
+    entry carrying any of them audits the named packages as clean."""
+    for key in ("exclude", "only", "filter"):
+        entry = {"type": "composer", "url": "https://repo.packagist.org",
+                 key: ["vendor/vuln"] if key != "filter" else True}
+        for repositories in ({"packagist.org": entry}, [{"packagist": entry}]):
+            directory = Path(tempfile.mkdtemp())
+            (directory / "composer.json").write_text(json.dumps(
+                {"name": "macula/fixture", "repositories": repositories}))
+            try:
+                module.refuse_an_undated_ignore("php", directory)
+            except module.CouldNotScan as problem:
+                assert key in str(problem), (key, problem)
+                continue
+            raise AssertionError(f"packagist with {key} was audited as if clean")
+
+
+def case_php_refuses_a_packagist_entry_without_an_advisory_provider(module):
+    """A vcs entry at packagist's own url carries no advisories at all, so the
+    audit is told nothing rather than told clean."""
     directory = Path(tempfile.mkdtemp())
     (directory / "composer.json").write_text(json.dumps(
         {"name": "macula/fixture",
-         "repositories": {"packagist.org": {"type": "composer",
-                                            "url": "https://repo.packagist.org/"}}}))
-    module.refuse_an_undated_ignore("php", directory)
+         "repositories": {"packagist.org": {"type": "vcs",
+                                            "url": "https://repo.packagist.org"}}}))
+    try:
+        module.refuse_an_undated_ignore("php", directory)
+    except module.CouldNotScan as problem:
+        assert "no advisory provider" in str(problem), problem
+        return
+    raise AssertionError("a vcs entry replaced packagist and was accepted")
+
+
+def case_php_refuses_an_unnamed_entry_at_packagists_url(module):
+    """Config::merge disables the default for any composer entry whose url
+    matches packagist.org, named or not, so an unnamed one replaces it too."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture",
+         "repositories": [{"type": "composer", "url": "https://repo.packagist.org",
+                           "exclude": ["vendor/vuln"]}]}))
+    try:
+        module.refuse_an_undated_ignore("php", directory)
+    except module.CouldNotScan as problem:
+        assert "exclude" in str(problem), problem
+        return
+    raise AssertionError("an unnamed packagist entry with an exclude list was accepted")
+
+
+def case_php_allows_packagist_defined_at_its_own_url(module):
+    """Naming packagist at its own URL, with nothing else, changes nothing."""
+    for repositories in (
+            {"packagist.org": {"type": "composer", "url": "https://repo.packagist.org/"}},
+            [{"packagist": {"type": "composer", "url": "https://packagist.org"}}],
+            [{"type": "composer", "url": "https://repo.packagist.org"}],
+            [{"type": "vcs", "url": "https://example.invalid/private-repo"}]):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": repositories}))
+        module.refuse_an_undated_ignore("php", directory)
 
 
 def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
@@ -670,6 +724,9 @@ CASES = [
     case_php_refuses_a_disabled_packagist,
     case_php_refuses_the_legacy_packagist_name,
     case_php_refuses_a_redefined_packagist,
+    case_php_refuses_a_filtered_packagist,
+    case_php_refuses_a_packagist_entry_without_an_advisory_provider,
+    case_php_refuses_an_unnamed_entry_at_packagists_url,
     case_php_allows_packagist_defined_at_its_own_url,
     case_an_ecosystem_without_an_ignore_file_is_left_alone,
     case_python_reads_the_build_backends_requirements,

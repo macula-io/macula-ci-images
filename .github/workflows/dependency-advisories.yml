@@ -279,8 +279,12 @@ jobs:
           not point npm audit at another registry or set a key that prunes the install, a
           bare line counting as key=true because that is how npm's ini reads it. A
           composer.json that switches packagist off, under either its name or the legacy
-          "packagist", or that defines packagist again at another URL, is refused too: it
-          leaves the audit no advisory source, or one that need not carry the entry.
+          "packagist", is refused too, and a packagist entry is allowed only as exactly
+          {type: composer, url: a packagist URL}: exclude, only and filter remove packages
+          before the audit is asked, a vcs entry has no advisory provider, and any other
+          url is a different source of advisories. An unnamed composer entry at a
+          packagist URL replaces the default just as a named one does, so it is read the
+          same way.
           Anything else is refused, naming the key (exit 2). Likewise a rebar.lock or
           mix.lock that pins a git dependency is refused: it ships, but no advisory
           database can look it up, so the scanned set would quietly be smaller than the
@@ -900,48 +904,87 @@ jobs:
 
           def packagist_refusal(document):
               """composer.json can take the one source of advisories away, and Composer
-              gives it three ways to do it: switch packagist off, use the legacy name
-              "packagist" (Config::merge treats it as packagist.org), or define
-              packagist.org again at another URL, which REPLACES the default repository.
-              Both names are read in both shapes, a list of one-key objects and an object
-              keyed by name."""
-              for name, value in repository_entries(document):
-                  if name not in PACKAGIST_NAMES:
+              gives it several ways to do it: switch packagist off, use the legacy name
+              "packagist" (Config::merge treats it as packagist.org), redefine
+              packagist.org at another URL, or filter it. A packagist entry is allowed
+              only as exactly {type: composer, url: a packagist URL}: exclude, only and
+              filter remove names before the audit is asked (Composer filters them in
+              FilterRepository::getSecurityAdvisories), and a vcs entry has no advisory
+              provider at all. Both names are read in both shapes, a list of one-key
+              objects and an object keyed by name, and so is an UNNAMED composer entry at
+              a packagist URL, which Config::merge also lets replace the default."""
+              for name, entry in repository_declarations(document):
+                  if not replaces_packagist(name, entry):
                       continue
-                  if value is False:
-                      return (f'switches {name} off in "repositories", which leaves composer '
-                              "audit with no advisory source to ask; it would answer clean "
-                              "because nobody was asked")
-                  if is_table(value) and packagist_url(value) not in PACKAGIST_URLS:
-                      return (f'redefines {name} at {value.get("url", "no url")!r} in '
-                              '"repositories", which replaces the default repository, so the '
-                              "audit asks a mirror that need not carry the advisory")
+                  refusal = packagist_entry_refusal(name, entry)
+                  if refusal:
+                      return refusal
+              return None
+
+
+          def replaces_packagist(name, entry):
+              """Whether this declaration takes the place of the default repository."""
+              if name is not None:
+                  return name in PACKAGIST_NAMES
+              return is_table(entry) and bool(PACKAGIST_URL_PATTERN.search(str(entry.get("url", ""))))
+
+
+          def packagist_entry_refusal(name, entry):
+              where = name if name is not None else f"an unnamed entry at {entry.get('url', 'no url')!r}"
+              if entry is False:
+                  return (f'switches {where} off in "repositories", which leaves composer audit with '
+                          "no advisory source to ask; it would answer clean because nobody was asked")
+              if not is_table(entry):
+                  return f"declares {where} as {entry!r}, which cannot be read as a repository"
+              extra = sorted(set(entry) - PACKAGIST_ENTRY_KEYS)
+              if extra:
+                  return (f'defines {where} with {", ".join(extra)}: those keys remove packages '
+                          "before the audit is asked, so a package named there is audited as clean "
+                          "with no date and no owner")
+              if entry.get("type") != "composer":
+                  return (f"defines {where} with type {entry.get('type')!r}, which has no advisory "
+                          "provider, so the audit would be told nothing")
+              if packagist_url(entry) not in PACKAGIST_URLS:
+                  return (f"redefines {where} at {entry.get('url', 'no url')!r}, which replaces the "
+                          "default repository, so the audit asks a mirror that need not carry the "
+                          "advisory")
               return None
 
 
           # Composer's name for the default repository, old and new, and the URLs that are
-          # that repository. A named entry replaces the default, so any other URL is a
-          # different source of advisories.
+          # that repository.
           PACKAGIST_NAMES = ("packagist.org", "packagist")
           PACKAGIST_URLS = ("https://repo.packagist.org", "https://packagist.org")
+          # Config::merge disables the default for a composer-type entry whose url matches
+          # this, named or not, so an unnamed entry can replace it as well.
+          PACKAGIST_URL_PATTERN = re.compile(
+              r"^https?://(?:[a-z0-9-.]+\.)?packagist\.org(/|$)", re.IGNORECASE)
+          # Everything a packagist entry may say. exclude, only and filter all subtract
+          # packages from what the audit is asked; a vcs entry has no advisory provider.
+          PACKAGIST_ENTRY_KEYS = {"type", "url"}
 
 
           def packagist_url(repository):
               return str(repository.get("url", "")).rstrip("/")
 
 
-          def repository_entries(document):
-              """Every (name, value) a composer.json repositories setting declares, in
+          def repository_declarations(document):
+              """Every (name, entry) a composer.json repositories setting declares, in
               either shape it accepts: an object keyed by name, or a list whose items are
-              one-key objects."""
+              either a one-key object naming the repository or an unnamed spec with its
+              own type and url."""
               repositories = document.get("repositories")
               if is_table(repositories):
                   return list(repositories.items())
-              entries = []
+              declarations = []
               for repository in repositories or []:
-                  if is_table(repository):
-                      entries += list(repository.items())
-              return entries
+                  if not is_table(repository):
+                      continue
+                  if "type" in repository or "url" in repository:
+                      declarations.append((None, repository))
+                  else:
+                      declarations += list(repository.items())
+              return declarations
 
 
           def php_ignores(cwd):
@@ -1007,7 +1050,8 @@ jobs:
           # because it decides neither the dependency set nor the database that answers:
           # npm reads production, omit, only and include to prune the install, a scoped
           # @scope:registry to redirect a package's source, and audit-level only moves the
-          # exit code, which this gate does not read (it parses the JSON).
+          # exit code, which this gate does not read (it parses the JSON). strict-ssl is
+          # NOT here: strict-ssl=false lets anyone on the path answer the audit.
           NPMRC_KEYS = {
               "registry",             # only the default value, checked above
               "audit-level",          # exit code only; the findings are parsed from JSON
@@ -1016,7 +1060,6 @@ jobs:
               "save-exact",
               "save-prefix",
               "legacy-peer-deps",
-              "strict-ssl",
               "loglevel",
               "progress",
               "update-notifier",
