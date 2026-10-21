@@ -305,6 +305,20 @@ jobs:
               return names
 
 
+          _DOC_LINES = {}
+
+
+          def selects(root, line, number, name):
+              """Does the doc line use `name` as a package (`name.Member`)? A free value
+              that shares a package's name (a token, a user, a path) is not one."""
+              path = relative(root, line)
+              if path not in _DOC_LINES:
+                  _DOC_LINES[path] = (root / path).read_text(errors="replace").split("\n")
+              lines = _DOC_LINES[path]
+              text = lines[number - 1] if 0 < number <= len(lines) else ""
+              return re.search(rf"(?<![\w.]){re.escape(name)}\.[A-Za-z_]", text) is not None
+
+
           def relative(root, line):
               """The doc path an error names, relative to the module root."""
               path = line.strip().split(".md:", 1)[0] + ".md"
@@ -383,7 +397,8 @@ jobs:
                               continue
                           message = error.group("msg")
                           bare = re.match(r"^undefined: ([A-Za-z_]\w*)$", message)
-                          if bare and bare.group(1) in packages_here and kind != "file":
+                          if bare and bare.group(1) in packages_here and kind != "file" \
+                                  and selects(root, line, int(error.group("line")), bare.group(1)):
                               # goimports found no member of that name in the package, so
                               # it added no import: the member is not there.
                               failures.append((relative(root, line), int(error.group("line")),

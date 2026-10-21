@@ -143,6 +143,11 @@ with_block "a fragment using a value the prose made passes" 0 "0 failure(s)" \
   '```go' 'err := tally.Bump(ctx)' '```'
 with_block "a var block stays a function body" 0 "0 failure(s)" \
   '```go' 'var t *counter.Tally' 't = counter.New("x")' '```'
+with_block "a value named like a package is a free identifier" 0 "0 failure(s)" \
+  '```go' 'fmt.Println(token, user, path)' '```'
+with_block "a package-named value beside a missing member still fails" 1 \
+  "README.md:$((CODE + 1)): undefined: os: the package os has no member" \
+  '```go' 'fmt.Println(token)' 'data, err := os.ReadFil("x")' '```'
 with_block "a block in another language is not read" 0 "0 failure(s)" \
   '```rust' 'counter::reset();' '```'
 
