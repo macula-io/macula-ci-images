@@ -138,6 +138,10 @@ with_block "a module of the package's own that is not there" 1 \
 with_block "a standard module used and never imported" 1 \
   "README.md:$CODE: Name \"json\" is not defined: the standard module json is used and never imported" \
   '```python' 'json.dumps({})' '```'
+with_block "a block's own import wins over an earlier block's" 1 \
+  "README.md:$((CODE + 4)): \"Tally\" has no attribute \"bunp\"" \
+  '```python' 'from fixture_counter import Tally as new' '```' \
+  '```python' 'from fixture_counter import new' 'new("a").bunp()' '```'
 with_block "a skip with no reason" 1 "skip gives no reason" \
   '<!-- doc_snippets: skip -->' '```python' 'nope()' '```'
 with_block "a marker that is not one" 1 "unknown marker 'ignore'" \

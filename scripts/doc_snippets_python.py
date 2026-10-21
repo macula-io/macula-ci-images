@@ -34,6 +34,7 @@ Exit 0 when every block type-checks, 1 when any fails (path:line: message), 2
 when the check cannot run (not a Python project, no mypy).
 """
 
+import ast
 import os
 import re
 import shutil
@@ -110,6 +111,21 @@ def code_of(body):
     return body
 
 
+def bound_names(line):
+    """The names an import line binds: `import a.b` binds a, `import a as x`
+    x, `from m import a as b, c` b and c."""
+    try:
+        tree = ast.parse(line.strip())
+    except SyntaxError:
+        return set()
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".")[0])
+    return names
+
+
 def packages_of(root):
     """The import names the project's own packages have, and where their source is."""
     base = root / "src" if (root / "src").is_dir() else root
@@ -162,7 +178,11 @@ def main(argv):
                 # one line each, a hoisted import left blank in its place.
                 hoisted = {n for n, t in code if IMPORT.match(t) and not t[:1].isspace()
                            and not t.rstrip().endswith(("(", "\\"))}
-                rows = [(None, t) for t in carried]
+                # A carried import that binds a name the block imports itself
+                # would shadow it: the block's own import wins, as in a session.
+                own_names = set().union(*(bound_names(t) for n, t in code if n in hoisted)) \
+                    if hoisted else set()
+                rows = [(None, t) for t in carried if not bound_names(t) & own_names]
                 rows += [(n, t) for n, t in code if n in hoisted]
                 rows += [(None, "async def _snippet() -> None:")]
                 rows += [(n, "" if n in hoisted or not t.strip() else f"    {t}") for n, t in code]
