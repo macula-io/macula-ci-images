@@ -7,16 +7,17 @@
 # embedded block is scripts/doc_snippets_ts.py byte for byte and that the workflow
 # is valid YAML.
 #
-# The fixture is scripts/fixtures/doc_snippets/ts, a typed Python package whose
-# README and guide use every shape the check reads: a block with a top-level await,
-# a later block using the earlier block's import and a value the prose made, `[...]`,
-# a pycon session with output, a skip with a reason, and a function of the reader's
-# own. Each failing case appends one block to a copy of its README and states the
-# exit code and the doc line the check must report.
+# The fixture is scripts/fixtures/doc_snippets/ts, a TypeScript package whose
+# README and guide use every shape the check reads: a block with a top-level await
+# and a value the prose made, a later block using what the prose made and listing
+# alternatives, a JavaScript block, a skip with a reason, and an exported function
+# of the reader's own. Each failing case appends one block to a copy of its README
+# and states the exit code and the doc line the check must report.
 #
-# The interpreter is $PYTHON (default python3), which must have mypy.
+# tsc must be on PATH; the interpreter is $PYTHON (default python3), which must
+# have pyyaml.
 #
-# Usage: scripts/test_doc_snippets_go.sh [--verbose]
+# Usage: scripts/test_doc_snippets_ts.sh [--verbose]
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -125,6 +126,12 @@ with_block "a module of the package's that is not there" 1 \
   '```ts' 'import { x } from "fixture-counter/missing";' '```'
 with_block "a block that does not parse" 1 "README.md:$CODE: TS1" \
   '```ts' 'const x = {;' '```'
+with_block "a misspelt use of a name the block imports" 1 \
+  "README.md:$((CODE + 1)): TS2552: Cannot find name 'creat'. Did you mean 'create'?" \
+  '```ts' 'import { create } from "fixture-counter";' 'const t = creat("a");' '```'
+with_block "a misspelt global" 1 \
+  "README.md:$CODE: TS2552: Cannot find name 'consol'. Did you mean 'console'?" \
+  '```ts' 'consol.log(1);' '```'
 with_block "a skip with no reason" 1 "skip gives no reason" \
   '<!-- doc_snippets: skip -->' '```ts' 'nope();' '```'
 with_block "a marker that is not one" 1 "unknown marker 'ignore'" \

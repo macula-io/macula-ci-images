@@ -111,7 +111,10 @@ jobs:
 
           What a block leaves to the reader is not an error: a name it uses and does not
           declare (a realm, a stationId the prose has made), a name it declares twice by
-          listing alternatives, and a return with no function around it. Everything about the package is: an export, a property,
+          listing alternatives, and a return with no function around it. A misspelt name
+          is reported when tsc's suggestion is a name the block imports or declares, or a
+          common global (console, Promise, JSON, ...); one that only resembles some other
+          library name reads as a free value, and is not caught. Everything about the package is: an export, a property,
           a method, an argument or a type it does not have, a module it cannot find, the
           syntax. A property of a name the block does not declare cannot be checked: its
           type is not known.
@@ -149,12 +152,35 @@ jobs:
           # alternatives declares twice.
           FRAGMENT_ONLY = {
               "TS2304",  # Cannot find name 'x'.
-              "TS2552",  # Cannot find name 'x'. Did you mean 'y'?
               "TS2451",  # Cannot redeclare block-scoped variable 'x'.
               "TS2300",  # Duplicate identifier 'x'.
               "TS18004",  # No value exists in scope for the shorthand property 'x'.
               "TS1108",  # A 'return' statement can only be used within a function body.
           }
+
+
+          # A misspelt name: excused like a free one unless what tsc suggests is a name
+          # the block itself imports or declares, or a global a reader types every day.
+          DID_YOU_MEAN = re.compile(r"Did you mean '([A-Za-z_$][\w$]*)'\?")
+          GLOBALS = {"console", "process", "Promise", "JSON", "Math", "Object", "Array", "String",
+                     "Number", "Boolean", "Date", "Error", "Buffer", "Map", "Set", "Symbol",
+                     "setTimeout", "clearTimeout", "setInterval", "clearInterval", "fetch", "URL"}
+          DECLARED = re.compile(
+              r"\b(?:const|let|var|function\*?|class|enum|interface|type)\s+([A-Za-z_$][\w$]*)"
+              r"|\bimport\s+(?:type\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)"
+              r"|\*\s+as\s+([A-Za-z_$][\w$]*)")
+          NAMED_IMPORTS = re.compile(r"\bimport\s+(?:type\s+)?(?:[\w$]+\s*,\s*)?\{([^}]*)\}", re.S)
+
+
+          def declared_names(text):
+              """The names a block binds: its declarations and its imports."""
+              names = {n for groups in DECLARED.findall(text) for n in groups if n}
+              for group in NAMED_IMPORTS.findall(text):
+                  for part in group.split(","):
+                      part = part.strip()
+                      if part:
+                          names.add(part.split(" as ")[-1].strip().removeprefix("type ").strip())
+              return names
 
 
           def docs(root):
@@ -258,7 +284,8 @@ jobs:
                           rows = [(n, t) for n, t in body] + [(None, "export {};")]
                           filename = f"snippet_{len(files)}{LANGUAGES[word]}"
                           (work / filename).write_text("".join(t + "\n" for _, t in rows))
-                          files[filename] = (doc, [n for n, _ in rows])
+                          files[filename] = (doc, [n for n, _ in rows],
+                                             declared_names("\n".join(t for _, t in body)))
                   if files:
                       # Paths are relative to the tsconfig's own directory (no baseUrl:
                       # TypeScript 6 removed it).
@@ -288,11 +315,15 @@ jobs:
                               # source means the blocks were not read: never a clean run.
                               foreign.append(line.strip())
                               continue
-                          doc, where = files[os.path.basename(error.group("file"))]
+                          doc, where, names = files[os.path.basename(error.group("file"))]
                           at = int(error.group("line")) - 1
                           doc_line = where[at] if 0 <= at < len(where) else None
                           if doc_line is None or error.group("code") in FRAGMENT_ONLY:
                               continue
+                          if error.group("code") == "TS2552":
+                              meant = DID_YOU_MEAN.search(error.group("msg"))
+                              if not meant or meant.group(1) not in names | GLOBALS:
+                                  continue
                           failures.append((doc, doc_line, f"{error.group('code')}: {error.group('msg')}"))
                       if foreign or out.returncode not in (0, 1, 2) or (out.returncode and not any(
                               ERROR.match(l.strip()) for l in (out.stdout + out.stderr).splitlines())):
