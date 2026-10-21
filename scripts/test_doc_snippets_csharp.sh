@@ -170,6 +170,11 @@ fresh_doc "a return of a value in a fragment passes" 0 "0 failure(s)" \
   '```csharp' 'return 1;' '```'
 fresh_doc "a deconstruction of a free value passes" 0 "0 failure(s)" \
   '```csharp' 'var (count, rest) = tally.Take(3);' '```'
+# The blocks are compiled one at a time, so a type the doc declares in another
+# block is not in scope; a reader who takes both blocks has it, so it passes.
+fresh_doc "a type another block of the same doc declares passes" 0 "0 failure(s)" \
+  '```csharp' 'var t = new CounterThing();' '```' '' \
+  '```csharp' 'public sealed class CounterThing { }' '```'
 
 echo
 echo "$((cases - failures)) of $cases passed"

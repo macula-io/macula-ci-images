@@ -24,8 +24,9 @@ line that is wrong.
 What a fragment leaves to the reader is not an error: a name it uses and does
 not declare (a realm, a caller the prose has made), a variable or a local
 function it does not use, a name a block of alternatives binds twice, and a
-return of a value where the wrapping method has none to return. Everything
-about the package is: a type that is not there, a member (CS0117, CS1061), an
+return of a value where the wrapping method has none to return, and a type
+another block of the same doc declares, which the reader who takes both has.
+Everything about the package is: a type that is not there, a member (CS0117, CS1061), an
 argument (CS1501), the syntax, and a capitalised name used as a type (Session,
 where Pool is now) even when nothing declares it, because C# writes a value in
 lowerCamelCase and a type in PascalCase. A misspelt local is a free name too,
@@ -76,11 +77,12 @@ TYPE_DECL = re.compile(
     r"^\s*(?:\[[^\]]*\]\s*)*"
     r"(?:(?:public|internal|private|protected|static|sealed|abstract|partial|readonly|"
     r"unsafe|file|ref)\s+)*"
-    r"(?:class|record|struct|interface|enum|delegate)\s+[A-Za-z_@]")
+    r"(?:class|record|struct|interface|enum|delegate)\s+(?P<name>[A-Za-z_@][\w]*)")
 ERROR = re.compile(r"^(?P<path>.+?)\((?P<line>\d+),(?P<col>\d+)\): error (?P<code>[A-Z]+\d+): "
                    r"(?P<msg>.*?)(?:\s+\[[^\]]*\])?$")
 ANY_ERROR = re.compile(r": error [A-Z]+\d*: ")
 MISSING_NAME = re.compile(r"The name '(?P<name>[^']+)' does not exist in the current context")
+MISSING_TYPE = re.compile(r"The type or namespace name '(?P<name>[^']+)' could not be found")
 TARGET_FRAMEWORK = re.compile(r"<TargetFrameworks?>([^<]+)</TargetFrameworks?>")
 NAMESPACE = re.compile(r"^\s*namespace\s+([A-Za-z_][\w.]*)", re.M)
 
@@ -298,10 +300,15 @@ def selects(root, doc, number, name):
     return re.search(rf"(?<![\w.]){re.escape(name)}\s*\.", doc_line(root, doc, number)) is not None
 
 
-def excuse(root, doc, line, code, message, kind, package_namespaces):
-    """Whether a diagnostic is what only a fragment produces. A block that
-    declares a type is the reader's own code, complete as far as it goes, and is
-    held to the compiler entirely."""
+def excuse(root, doc, line, code, message, kind, package_namespaces, declared):
+    """Whether a diagnostic is the reader's own code rather than the package's. A
+    block that declares a type is the reader's own code, complete as far as it
+    goes, and is held to the compiler entirely, except for a type another block of
+    the same doc declares: the blocks are compiled one at a time, and a reader who
+    takes both has it. A fragment is excused what only a fragment produces."""
+    if code == "CS0246":
+        missing_type = MISSING_TYPE.search(message)
+        return bool(missing_type) and missing_type.group("name") in declared
     if kind != "statements" or code not in FRAGMENT_ONLY:
         return False
     missing = MISSING_NAME.search(message)
@@ -331,6 +338,7 @@ def main(argv):
 
     package_namespaces = namespaces_of(references)
     failures, written, read = [], [], set(docs(root))
+    declared: dict[str, set[str]] = {}
     work = root / f"_doc_snippets_{os.getpid()}"
     build = None
     try:
@@ -362,6 +370,11 @@ def main(argv):
                 code = code_lines(rest)
                 if not code:
                     continue
+                # The types this doc declares itself, in any of its blocks: the
+                # blocks are compiled one at a time, so a block that uses a type
+                # another block of the same doc declares is the reader's own code.
+                declared.setdefault(doc, set()).update(
+                    match.group("name") for _, text in rest if (match := TYPE_DECL.match(text)))
                 index = len(written)
                 (work / "snippets" / f"s{index}.cs").write_text(
                     snippet_file(index, str(root / doc), carried, rest, kind_of(code)))
@@ -410,7 +423,7 @@ def main(argv):
         free, kept = set(), []
         for doc, line, code, message in found:
             block = written_block(written, doc, line)
-            if excuse(root, doc, line, code, message, block[1], package_namespaces):
+            if excuse(root, doc, line, code, message, block[1], package_namespaces, declared.get(doc, set())):
                 free.add((doc, block[0]))
                 continue
             kept.append((doc, line, code, message, block))
