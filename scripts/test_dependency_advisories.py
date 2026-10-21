@@ -221,6 +221,85 @@ def case_a_rebar_lock_becomes_hex_packages(module):
         "pkg:hex/telemetry@1.4.2"], sbom
 
 
+def case_a_lock_that_names_a_git_dependency_is_refused(module):
+    lock = FIXTURES / "rebar-git-dep.lock"
+    assert module.rebar_foreign_dependencies(lock) == ["cowlib (git)"], (
+        module.rebar_foreign_dependencies(lock))
+    try:
+        module.refuse_a_foreign_dependency(lock)
+    except module.CouldNotScan as problem:
+        assert "cowlib (git)" in str(problem), problem
+        return
+    raise AssertionError("a rebar.lock with a git dependency was scanned as if it were released")
+
+
+def case_a_lock_of_released_packages_is_not_refused(module):
+    module.refuse_a_foreign_dependency(FIXTURES / "rebar.lock")
+
+
+def case_rust_refuses_a_cargo_audit_ignore_list(module):
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".cargo").mkdir()
+    (directory / ".cargo/audit.toml").write_text(
+        "[advisories]\nignore = [\"RUSTSEC-2026-0374\"]\n")
+    try:
+        module.refuse_an_undated_ignore("rust", directory)
+    except module.CouldNotScan as problem:
+        assert ".cargo/audit.toml" in str(problem), problem
+        assert "advisories-waivers.txt" in str(problem), problem
+        return
+    raise AssertionError("cargo audit's ignore list was obeyed instead of refused")
+
+
+def case_rust_allows_a_cargo_audit_config_without_ignores(module):
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".cargo").mkdir()
+    (directory / ".cargo/audit.toml").write_text("[advisories]\nyanked = \"deny\"\n")
+    module.refuse_an_undated_ignore("rust", directory)
+
+
+def case_php_refuses_a_composer_audit_ignore_list(module):
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture",
+         "config": {"audit": {"ignore": {"CVE-2026-1234": "no fix yet"}}}}))
+    try:
+        module.refuse_an_undated_ignore("php", directory)
+    except module.CouldNotScan as problem:
+        assert "composer.json" in str(problem), problem
+        return
+    raise AssertionError("composer audit's ignore list was obeyed instead of refused")
+
+
+def case_php_allows_a_composer_config_without_ignores(module):
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture", "config": {"sort-packages": True}}))
+    module.refuse_an_undated_ignore("php", directory)
+
+
+def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
+    """node, go, python, csharp, erlang and elixir have no ignore file to read:
+    the scan is not refused for them even when the repository is full of
+    configuration."""
+    directory = Path(tempfile.mkdtemp())
+    for name in ("package.json", "composer.json", ".cargo/audit.toml", "pyproject.toml"):
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+    for ecosystem in ("node", "go", "python", "csharp", "erlang", "elixir"):
+        module.refuse_an_undated_ignore(ecosystem, directory)
+
+
+def case_python_reads_the_build_backends_requirements(module):
+    requires = module.build_requires(FIXTURES / "python")
+    assert requires == ["setuptools>=68"], requires
+
+
+def case_python_with_no_pyproject_has_no_build_requirements(module):
+    assert module.build_requires(Path(tempfile.mkdtemp())) == []
+
+
 def case_a_waiver_is_read_and_dated(module):
     waivers = module.parse_waivers(FIXTURES / "waivers-good.txt", module.parse_today("2026-10-21"))
     assert set(waivers) == {("GHSA-2p57-rm9w-gvfp", "undici"), ("RUSTSEC-2026-0374", "basic-toml")}
@@ -347,6 +426,20 @@ def case_a_directory_that_is_not_there_exits_two(module):
     assert code == 2, (code, text)
 
 
+def case_a_repository_that_waives_in_its_own_config_exits_two(module):
+    """The refusal has to reach the exit code the CI job sees, not only the
+    reader: a repo that silences an advisory in its scanner's own config is a
+    repository the gate cannot scan honestly."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".cargo").mkdir()
+    (directory / ".cargo/audit.toml").write_text(
+        "[advisories]\nignore = [\"RUSTSEC-2026-0374\"]\n")
+    code, text = scan_in(directory, [], ecosystem="rust")
+    assert code == 2, (code, text)
+    assert ".cargo/audit.toml" in text, text
+    assert "0 advisory finding(s)" not in text, text
+
+
 CASES = [
     case_the_embedded_copy_is_the_script,
     case_the_embedded_requirements_are_the_pinned_ones,
@@ -362,6 +455,15 @@ CASES = [
     case_composer_with_no_package_has_nothing_to_audit,
     case_dotnet_reads_top_level_and_transitive,
     case_a_rebar_lock_becomes_hex_packages,
+    case_a_lock_that_names_a_git_dependency_is_refused,
+    case_a_lock_of_released_packages_is_not_refused,
+    case_rust_refuses_a_cargo_audit_ignore_list,
+    case_rust_allows_a_cargo_audit_config_without_ignores,
+    case_php_refuses_a_composer_audit_ignore_list,
+    case_php_allows_a_composer_config_without_ignores,
+    case_an_ecosystem_without_an_ignore_file_is_left_alone,
+    case_python_reads_the_build_backends_requirements,
+    case_python_with_no_pyproject_has_no_build_requirements,
     case_a_waiver_is_read_and_dated,
     case_an_expired_waiver_fails_the_run,
     case_a_waiver_without_its_fields_is_refused,
@@ -375,6 +477,7 @@ CASES = [
     case_an_expired_waiver_exits_two,
     case_a_scanner_that_cannot_run_exits_two,
     case_a_directory_that_is_not_there_exits_two,
+    case_a_repository_that_waives_in_its_own_config_exits_two,
 ]
 
 

@@ -13,12 +13,15 @@ fixed, or a dated, named waiver says why it cannot be yet and when it must be.
 
   erlang  rebar3 compile, then the resolved rebar.lock as an SBOM, to osv-scanner
   elixir  mix deps.get, then mix.lock to osv-scanner
-  go      govulncheck, which reports the vulnerabilities the code can reach
+  go      govulncheck, which reports the vulnerabilities the code can reach,
+          at call and package level; a module-level one is named, not failed
   rust    cargo audit, its vulnerabilities (an unmaintained crate is a warning)
   node    npm audit over the whole lock, dev included: a build tool runs in
           the release job with its credentials
   php     composer install, then composer audit over the whole lock
-  python  the package installed into a fresh venv, then pip-audit
+  python  the dependency set and the build backend's own requirements in
+          [build-system], resolved and then audited by pip-audit; a test or
+          dev extra is out, because it does not run in the release job
   csharp  dotnet list package --vulnerable --include-transitive
 
 The waivers are a file in the repository, one row per advisory:
@@ -29,6 +32,14 @@ The waivers are a file in the repository, one row per advisory:
 An expired waiver fails the run (exit 2), so a waiver cannot outlive its reason
 unless someone looks at it again. A row without a why, an owner or an expiry is
 refused the same way.
+
+The waivers file is the only way to waive. Several scanners also read a config
+file from the repository they run in, and an ignore list there would waive with
+no date, no owner and no why, so such a config is refused instead (exit 2,
+naming the file): cargo audit's .cargo/audit.toml and composer audit's
+composer.json "config": {"audit": {"ignore": ...}}. Likewise a rebar.lock that
+pins a git or path dependency is refused: it ships, but no advisory database can
+look it up, so the scanned set would quietly be smaller than the shipped set.
 
 Usage:
   dependency_advisories.py --ecosystem node [--working-directory .]
@@ -44,6 +55,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,6 +141,7 @@ def erlang_findings(cwd, work):
     lock = cwd / "rebar.lock"
     if not lock.exists():
         raise CouldNotScan(f"rebar3 compile wrote no {lock}")
+    refuse_a_foreign_dependency(lock)
     packages = rebar_packages(lock)
     if not packages:
         raise CouldNotScan(f"{lock} names no package")
@@ -139,6 +152,9 @@ def erlang_findings(cwd, work):
 
 REBAR_LOCK_ENTRY = re.compile(
     r'\{\s*<<"([^"]+)">>\s*,\s*\{pkg\s*,\s*<<"([^"]+)">>\s*,\s*<<"([^"]+)">>\s*\}')
+# A lock entry whose second element is any source other than a released
+# package: {<<"name">>, {git | path | hg, ...}, Level}.
+REBAR_LOCK_OTHER = re.compile(r'\{\s*<<"([^"]+)">>\s*,\s*\{\s*(git|path|hg)\s*,')
 
 
 def rebar_packages(lock):
@@ -149,6 +165,26 @@ def rebar_packages(lock):
         if entry:
             packages[entry.group(2)] = entry.group(3)
     return packages
+
+
+def rebar_foreign_dependencies(lock):
+    """Every lock entry that is not a released package, as name and kind."""
+    return [f"{entry.group(1)} ({entry.group(2)})"
+            for line in lock.read_text(errors="replace").splitlines()
+            for entry in [REBAR_LOCK_OTHER.search(line)] if entry]
+
+
+def refuse_a_foreign_dependency(lock):
+    """A git or path dependency ships, but no advisory database can look it up,
+    so scanning it would leave the gate quietly smaller than what is shipped -
+    and a git dependency is also how an advisory could be made to disappear
+    rather than be fixed."""
+    foreign = rebar_foreign_dependencies(lock)
+    if foreign:
+        raise CouldNotScan(
+            f"{lock} carries {', '.join(foreign)}, which is not a released package: no "
+            "advisory database covers it, so the scanned set would be smaller than the "
+            "shipped set. Depend on a released version")
 
 
 def cyclonedx(packages):
@@ -228,9 +264,10 @@ def fixed_versions(vulnerability):
 
 def go_findings(cwd, work):
     """govulncheck reports what the code can reach, at three levels: a call it
-    found (symbol), a package it imports, and a module it merely requires. Only
-    the first two are in the product; the third is a version that carries an
-    advisory nobody can reach, and it is named here without failing the build.
+    found (symbol), a package it imports, and a module it merely requires. The
+    first two are findings, because the code can reach the advisory through
+    them. The third is a version that carries an advisory nobody can call, and
+    it is named here without failing the build.
     """
     text = output(["govulncheck", "-json", "./..."], cwd, ok=(0, 3))
     found, unreachable = parse_govulncheck(text)
@@ -247,8 +284,10 @@ def parse_govulncheck(text):
 
     Returns the findings and the number of advisories that are only in a
     required module: a trace that names no package and no function is that.
+    The count is of distinct advisories, not messages, because one unreachable
+    advisory is announced once per module that requires it.
     """
-    summaries, found, unreachable = {}, [], 0
+    summaries, found, unreachable = {}, [], set()
     for message in json_messages(text, "govulncheck"):
         if "osv" in message:
             summaries[message["osv"].get("id", "")] = first_line(message["osv"].get("summary"))
@@ -257,10 +296,10 @@ def parse_govulncheck(text):
             continue
         reached = reached_entry(finding["trace"])
         if reached is None:
-            unreachable += 1
+            unreachable.add(finding.get("osv", ""))
         else:
             found.append(govulncheck_finding(finding, reached, summaries))
-    return found, unreachable
+    return found, len(unreachable)
 
 
 def reached_entry(trace):
@@ -395,14 +434,17 @@ def composer_advisory(package, advisory):
 
 
 def python_findings(cwd, work):
-    """What `pip install .` would bring in. The project itself is resolved and
-    not built: some of ours build a native library that needs a toolchain this
-    gate has no business carrying, and what ships is the dependency set, not the
-    build."""
+    """What `pip install .` would bring in, plus the build backend's own
+    requirements. The project itself is resolved and not built: some of ours
+    build a native library that needs a toolchain this gate has no business
+    carrying, and what ships is the dependency set, not the build. The build
+    requirements are in scope because the backend runs inside the release job
+    with the PyPI credential, which is the same reason node and php read their
+    dev dependencies."""
     venv = work / "venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     output([sys.executable, "-m", "venv", str(venv)], cwd)
-    pins = resolved_pins(cwd, work, python)
+    pins = resolved_pins(cwd, work, python, build_requires(cwd))
     if not pins:
         return []
     output([str(python), "-m", "pip", "install", "--quiet", "--require-hashes",
@@ -412,6 +454,19 @@ def python_findings(cwd, work):
     return parse_pip_audit(load_json(text, "pip-audit"))
 
 
+def build_requires(cwd):
+    """The build backend's requirements, from [build-system] in pyproject.toml.
+    They are not in what `pip install .` reports, and they run with the
+    credential that publishes the release, so they are resolved and audited
+    beside the runtime dependencies. A test or dev extra is not: it runs
+    nowhere near the release job."""
+    path = cwd / "pyproject.toml"
+    if not path.exists():
+        return []
+    requires = (toml_file(path).get("build-system") or {}).get("requires") or []
+    return [str(requirement) for requirement in requires]
+
+
 def audit_requirements():
     """The pinned, hash-checked wheels pip-audit is installed from. It travels
     beside this script, so the tool that decides the answer cannot change
@@ -419,13 +474,13 @@ def audit_requirements():
     return Path(__file__).with_name("pip-audit-requirements.txt")
 
 
-def resolved_pins(cwd, work, python):
-    """The dependency set a `pip install .` resolves to, as pinned requirements
-    (the project itself is a local path and is left out), or None when there is
-    no dependency at all."""
+def resolved_pins(cwd, work, python, extra=()):
+    """The dependency set a `pip install .` resolves to, plus `extra` (the build
+    backend's requirements), as pinned requirements (the project itself is a
+    local path and is left out), or None when there is no dependency at all."""
     report = work / "pip-report.json"
     output([str(python), "-m", "pip", "install", "--dry-run", "--quiet",
-            "--ignore-installed", "--report", str(report), "."], cwd)
+            "--ignore-installed", "--report", str(report), ".", *extra], cwd)
     document = load_json(report.read_text(errors="replace"), "pip install --report")
     pins = sorted(f"{item['metadata']['name']}=={item['metadata']['version']}"
                   for item in document.get("install") or []
@@ -510,6 +565,70 @@ SCANNERS = {
     "python": python_findings,
     "csharp": csharp_findings,
 }
+
+
+# --------------------------------------------------------------------------
+# A repository's own scanner config. Every scanner that reads one honours it
+# silently, so an ignore list there is a waiver without a date, an owner or a
+# why, and it is refused rather than obeyed.
+
+
+def rust_ignores(cwd):
+    """cargo audit reads .cargo/audit.toml from the project it runs in, and its
+    [advisories] ignore list silences advisories."""
+    path = cwd / ".cargo/audit.toml"
+    if not path.exists():
+        return None
+    document = toml_file(path)
+    advisories = document.get("advisories") or {}
+    if "ignore" not in advisories:
+        return None
+    return (f"{path} carries an [advisories] ignore list, which waives with no date, "
+            "owner or reason; a waiver belongs in .github/advisories-waivers.txt")
+
+
+def php_ignores(cwd):
+    """composer audit honours "config": {"audit": {"ignore": [...]}} in
+    composer.json (Composer 2.6 and later)."""
+    path = cwd / "composer.json"
+    if not path.exists():
+        return None
+    document = load_json(path.read_text(errors="replace"), str(path))
+    ignore = ((document.get("config") or {}).get("audit") or {}).get("ignore")
+    if ignore is None:
+        return None
+    return (f"{path} carries config.audit.ignore, which waives with no date, owner or "
+            "reason; a waiver belongs in .github/advisories-waivers.txt")
+
+
+# Which ecosystems read a config file of their own, and the reader that refuses
+# it. The rest read none: govulncheck, npm audit and pip-audit take no ignore
+# file, and osv-scanner reads an osv-scanner.toml only from the directory it is
+# pointed at, which is the work directory and never the repository. dotnet list
+# package --vulnerable does not consult NuGetAuditSuppress: that item filters
+# the restore-time audit's warnings, and the listing command asks the sources
+# for the resolved packages itself (NuGet.Client keeps the two apart).
+IGNORE_CONFIGS = {
+    "rust": rust_ignores,
+    "php": php_ignores,
+}
+
+
+def refuse_an_undated_ignore(ecosystem, cwd):
+    reader = IGNORE_CONFIGS.get(ecosystem)
+    if not reader:
+        return
+    refusal = reader(cwd)
+    if refusal:
+        raise CouldNotScan(refusal)
+
+
+def toml_file(path):
+    try:
+        return tomllib.loads(path.read_text(errors="replace"))
+    except tomllib.TOMLDecodeError as broken:
+        raise CouldNotScan(f"{path} is not TOML: {broken}") from broken
+
 
 
 def first_line(text):
@@ -620,6 +739,7 @@ def row(finding):
 def run_scan(ecosystem, cwd, work):
     """One row per advisory and package: govulncheck reports a finding once per
     call trace, which is more than a reader needs."""
+    refuse_an_undated_ignore(ecosystem, cwd)
     found = SCANNERS[ecosystem](cwd, work)
     return list(dict.fromkeys(found))
 

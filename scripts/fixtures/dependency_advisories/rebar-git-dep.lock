@@ -1,0 +1,7 @@
+{"1.2.0",
+[{<<"cowlib">>,{git,"https://github.com/ninenines/cowlib.git",
+                     {ref,"4401b858f2229abb3ea115c60924f6c77e5f8aa3"}},0},
+ {<<"gproc">>,{pkg,<<"gproc">>,<<"1.3.0">>},1},
+ {<<"macula">>,{pkg,<<"macula">>,<<"15.6.0">>},0}]}.
+[
+].
