@@ -389,10 +389,12 @@ against the package. Each block is a module file of its own as it stands (a top-
 after `npm ci`, so nothing is built first. JavaScript is checked as JavaScript.
 
 What a block leaves to the reader is not an error: an undeclared name, a name declared
-twice, a return with no function. An export, property, method, argument or type the
-package does not have is, so is a module it cannot find. An error outside the blocks
-(the package's own source, the generated configuration) fails the run as one that could
-not be made.
+twice, a return with no function. A misspelt name is reported when tsc's suggestion is a
+name the block imports or declares, or a common global, unless the two differ only in
+case: `tally` beside the imported `Tally` is an instance of its class, not a
+misspelling. An export, property, method, argument or type the package does not have is,
+so is a module it cannot find. An error outside the blocks (the package's own source,
+the generated configuration) fails the run as one that could not be made.
 
 ```yaml
   docs:

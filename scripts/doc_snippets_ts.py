@@ -20,11 +20,13 @@ What a block leaves to the reader is not an error: a name it uses and does not
 declare (a realm, a stationId the prose has made), a name it declares twice by
 listing alternatives, and a return with no function around it. A misspelt name
 is reported when tsc's suggestion is a name the block imports or declares, or a
-common global (console, Promise, JSON, ...); one that only resembles some other
-library name reads as a free value, and is not caught. Everything about the package is: an export, a property,
-a method, an argument or a type it does not have, a module it cannot find, the
-syntax. A property of a name the block does not declare cannot be checked: its
-type is not known.
+common global (console, Promise, JSON, ...), unless the two names differ only in
+case: `tally` beside the imported `Tally` is an instance of its class, the shape
+an SDK README is written in, not a misspelling. One that only resembles some
+other library name reads as a free value, and is not caught. Everything about
+the package is: an export, a property, a method, an argument or a type it does
+not have, a module it cannot find, the syntax. A property of a name the block
+does not declare cannot be checked: its type is not known.
 
 Markers, an HTML comment on the line before the fence:
 
@@ -68,7 +70,10 @@ FRAGMENT_ONLY = {
 
 # A misspelt name: excused like a free one unless what tsc suggests is a name
 # the block itself imports or declares, or a global a reader types every day.
-DID_YOU_MEAN = re.compile(r"Did you mean '([A-Za-z_$][\w$]*)'\?")
+# The two names tsc puts in the message are kept, because `tally` beside the
+# imported `Tally` is an instance of its class, not a misspelling.
+DID_YOU_MEAN = re.compile(
+    r"Cannot find name '([A-Za-z_$][\w$]*)'\. Did you mean '([A-Za-z_$][\w$]*)'\?")
 GLOBALS = {"console", "process", "Promise", "JSON", "Math", "Object", "Array", "String",
            "Number", "Boolean", "Date", "Error", "Buffer", "Map", "Set", "Symbol",
            "setTimeout", "clearTimeout", "setInterval", "clearInterval", "fetch", "URL"}
@@ -194,6 +199,10 @@ def main(argv):
                 files[filename] = (doc, [n for n, _ in rows],
                                    declared_names("\n".join(t for _, t in body)))
         if files:
+            # tsc prints the path it was given, so a block is looked up by that
+            # whole path and not by its basename: a package source file that a
+            # block imports and that is called snippet_0.ts is not a block.
+            by_path = {os.path.realpath(work / name): block for name, block in files.items()}
             # Paths are relative to the tsconfig's own directory (no baseUrl:
             # TypeScript 6 removed it).
             paths = {name: ["./" + os.path.relpath(root / entry, work)],
@@ -217,19 +226,27 @@ def main(argv):
                 error = ERROR.match(line.strip())
                 if not error:
                     continue
-                if os.path.basename(error.group("file")) not in files:
+                reported = error.group("file")
+                block = by_path.get(os.path.realpath(
+                    reported if os.path.isabs(reported) else os.path.join(root, reported)))
+                if block is None:
                     # An error in the generated tsconfig or in the package's own
                     # source means the blocks were not read: never a clean run.
                     foreign.append(line.strip())
                     continue
-                doc, where, names = files[os.path.basename(error.group("file"))]
+                doc, where, names = block
                 at = int(error.group("line")) - 1
                 doc_line = where[at] if 0 <= at < len(where) else None
                 if doc_line is None or error.group("code") in FRAGMENT_ONLY:
                     continue
                 if error.group("code") == "TS2552":
                     meant = DID_YOU_MEAN.search(error.group("msg"))
-                    if not meant or meant.group(1) not in names | GLOBALS:
+                    misspelt, suggested = meant.groups() if meant else (None, None)
+                    # A name that differs from the suggestion only in case is an
+                    # instance named after its class (`tally` beside `Tally`), the
+                    # shape an SDK README is written in, not a misspelling.
+                    if (misspelt is None or suggested not in names | GLOBALS
+                            or misspelt.lower() == suggested.lower()):
                         continue
                 failures.append((doc, doc_line, f"{error.group('code')}: {error.group('msg')}"))
             if foreign or out.returncode not in (0, 1, 2) or (out.returncode and not any(

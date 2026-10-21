@@ -132,6 +132,8 @@ with_block "a misspelt use of a name the block imports" 1 \
 with_block "a misspelt global" 1 \
   "README.md:$CODE: TS2552: Cannot find name 'consol'. Did you mean 'console'?" \
   '```ts' 'consol.log(1);' '```'
+with_block "an instance named after the class it is of passes" 0 "0 failure(s)" \
+  '```ts' 'import { Tally } from "fixture-counter";' 'const n: number = tally.count;' '```'
 with_block "a skip with no reason" 1 "skip gives no reason" \
   '<!-- doc_snippets: skip -->' '```ts' 'nope();' '```'
 with_block "a marker that is not one" 1 "unknown marker 'ignore'" \
@@ -148,6 +150,18 @@ dir="$WORK/broken-source"
 cp -r "$WORK/good" "$dir"
 printf '%s\n' 'export const broken: number = "no";' >> "$dir/src/index.ts"
 run_case "an error outside the blocks is a run that could not be made" 2 "tsc could not run" \
+  "$PY" "$CHECK" "$dir"
+
+# A block is matched on the path tsc prints, not the basename: a package source
+# file a block imports and that is named like a generated snippet is the package's
+# own error, not a block's.
+dir="$WORK/collision"
+cp -r "$WORK/good" "$dir"
+printf '%s\n' 'export const broken: number = "not a number";' > "$dir/src/snippet_0.ts"
+printf '%s\n' '' 'A block that imports it:' '' \
+  '```ts' 'import { broken } from "fixture-counter/snippet_0";' 'console.log(broken);' '```' \
+  >> "$dir/README.md"
+run_case "a source file named like a block is not read as one" 2 "tsc could not run" \
   "$PY" "$CHECK" "$dir"
 
 echo
