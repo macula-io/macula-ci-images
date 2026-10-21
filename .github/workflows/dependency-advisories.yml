@@ -276,12 +276,16 @@ jobs:
           carry [output], [yanked] and [advisories] informational_warnings and nothing
           else; composer audit's composer.json config.audit may carry abandoned,
           block-insecure and block-abandoned and nothing else; and a committed .npmrc may
-          not point npm audit at another registry or set a key that prunes the install. A
-          composer.json that switches packagist.org off is refused too: it leaves the audit
-          no advisory source to ask. Anything else is refused, naming the key (exit 2).
-          Likewise a rebar.lock or mix.lock that pins a git or path dependency is refused:
-          it ships, but no advisory database can look it up, so the scanned set would
-          quietly be smaller than the shipped set.
+          not point npm audit at another registry or set a key that prunes the install, a
+          bare line counting as key=true because that is how npm's ini reads it. A
+          composer.json that switches packagist off, under either its name or the legacy
+          "packagist", or that defines packagist again at another URL, is refused too: it
+          leaves the audit no advisory source, or one that need not carry the entry.
+          Anything else is refused, naming the key (exit 2). Likewise a rebar.lock or
+          mix.lock that pins a git dependency is refused: it ships, but no advisory
+          database can look it up, so the scanned set would quietly be smaller than the
+          shipped set. (A path dependency does not appear in mix.lock at all, so an elixir
+          path dependency in mix.exs ships unscanned; this check cannot see it.)
 
           Usage:
             dependency_advisories.py --ecosystem node [--working-directory .]
@@ -470,9 +474,11 @@ jobs:
 
 
           def refuse_a_foreign_mix_dependency(lock):
-              """osv-scanner looks up hex packages and no git revision, so a git or path
+              """osv-scanner looks up hex packages and no git revision, so a git
               dependency ships unscanned. The same rule as rebar.lock, for the same
-              reason."""
+              reason. A path dependency does not appear in mix.lock at all, so this can
+              only ever name a git one: a path dependency in mix.exs ships unscanned and
+              this check cannot see it."""
               foreign = mix_foreign_dependencies(lock)
               if foreign:
                   raise CouldNotScan(
@@ -892,16 +898,50 @@ jobs:
               return isinstance(value, dict)
 
 
-          def packagist_disabled(document):
-              """composer.json {"repositories": [{"packagist.org": false}]} turns the one
-              source of advisories off, leaving composer audit nothing to ask. Composer
-              takes the repositories either as a list or as an object keyed by name, and
-              its documentation shows the switch in both shapes, so both are read."""
+          def packagist_refusal(document):
+              """composer.json can take the one source of advisories away, and Composer
+              gives it three ways to do it: switch packagist off, use the legacy name
+              "packagist" (Config::merge treats it as packagist.org), or define
+              packagist.org again at another URL, which REPLACES the default repository.
+              Both names are read in both shapes, a list of one-key objects and an object
+              keyed by name."""
+              for name, value in repository_entries(document):
+                  if name not in PACKAGIST_NAMES:
+                      continue
+                  if value is False:
+                      return (f'switches {name} off in "repositories", which leaves composer '
+                              "audit with no advisory source to ask; it would answer clean "
+                              "because nobody was asked")
+                  if is_table(value) and packagist_url(value) not in PACKAGIST_URLS:
+                      return (f'redefines {name} at {value.get("url", "no url")!r} in '
+                              '"repositories", which replaces the default repository, so the '
+                              "audit asks a mirror that need not carry the advisory")
+              return None
+
+
+          # Composer's name for the default repository, old and new, and the URLs that are
+          # that repository. A named entry replaces the default, so any other URL is a
+          # different source of advisories.
+          PACKAGIST_NAMES = ("packagist.org", "packagist")
+          PACKAGIST_URLS = ("https://repo.packagist.org", "https://packagist.org")
+
+
+          def packagist_url(repository):
+              return str(repository.get("url", "")).rstrip("/")
+
+
+          def repository_entries(document):
+              """Every (name, value) a composer.json repositories setting declares, in
+              either shape it accepts: an object keyed by name, or a list whose items are
+              one-key objects."""
               repositories = document.get("repositories")
               if is_table(repositories):
-                  return repositories.get("packagist.org") is False
-              return any(is_table(repository) and repository.get("packagist.org") is False
-                         for repository in repositories or [])
+                  return list(repositories.items())
+              entries = []
+              for repository in repositories or []:
+                  if is_table(repository):
+                      entries += list(repository.items())
+              return entries
 
 
           def php_ignores(cwd):
@@ -911,10 +951,9 @@ jobs:
               if not path.exists():
                   return None
               document = load_json(path.read_text(errors="replace"), str(path))
-              if packagist_disabled(document):
-                  return (f"{path} switches packagist.org off in \"repositories\", which leaves "
-                          "composer audit with no advisory source to ask; the audit would answer "
-                          "clean because nobody was asked")
+              refusal = packagist_refusal(document)
+              if refusal:
+                  return f"{path} {refusal}"
               audit = (document.get("config") or {}).get("audit")
               if audit is None:
                   return None
@@ -943,10 +982,16 @@ jobs:
                       continue
                   for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
                       line = line.split("#", 1)[0].strip()
-                      if not line or "=" not in line:
+                      if not line:
                           continue
-                      key, _, value = line.partition("=")
-                      key, value = key.strip(), value.strip()
+                      key, separator, value = line.partition("=")
+                      # npm's ini reads a bare key as true ("production" alone is
+                      # production=true), and key[]= appends to the same setting, so both
+                      # shapes are judged by the key they set.
+                      key = key.strip().removesuffix("[]")
+                      value = value.strip() if separator else "true"
+                      if not key:
+                          continue
                       if key == "registry" and value.rstrip("/") + "/" != NPM_DEFAULT_REGISTRY:
                           return (f"{path}:{number} scans a registry other than "
                                   f"{NPM_DEFAULT_REGISTRY} ({value}), so an advisory it has not "

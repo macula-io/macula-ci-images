@@ -371,11 +371,26 @@ def case_node_refuses_a_pruned_install(module):
         raise AssertionError(f"a .npmrc with {line} was accepted")
 
 
+def case_node_refuses_a_bare_key(module):
+    """npm's ini reads a line with no '=' as key=true, so a .npmrc holding just
+    "production" prunes the dev tree as surely as "production=true" does. A
+    key[]= line appends to the same setting and is judged by its key."""
+    for line in ("production", "omit", "  omit[]=dev", "include[]=dev"):
+        directory = Path(tempfile.mkdtemp())
+        (directory / ".npmrc").write_text(line + "\n")
+        try:
+            module.refuse_an_undated_ignore("node", directory)
+        except module.CouldNotScan as problem:
+            assert line.split("=")[0].replace("[]", "").strip() in str(problem), (line, problem)
+            continue
+        raise AssertionError(f"a bare .npmrc line '{line}' was skipped instead of refused")
+
+
 def case_node_allows_the_default_registry(module):
     directory = Path(tempfile.mkdtemp())
     (directory / ".npmrc").write_text(
         "registry=https://registry.npmjs.org/\nengine-strict=true\n"
-        "audit-level=high\n")
+        "audit-level=high\nfund\n")
     module.refuse_an_undated_ignore("node", directory)
 
 
@@ -400,9 +415,9 @@ def case_a_mix_lock_of_hex_packages_is_not_refused(module):
 
 
 def case_php_refuses_a_disabled_packagist(module):
-    """With packagist.org switched off, composer audit has no advisory source to
-    ask and answers clean because nobody was asked. Composer takes repositories
-    as a list or as an object keyed by name, and both switch it off."""
+    """With packagist switched off, composer audit has no advisory source to ask
+    and answers clean because nobody was asked. Composer takes repositories as a
+    list or as an object keyed by name, and both switch it off."""
     for repositories in ([{"packagist.org": False}], {"packagist.org": False}):
         directory = Path(tempfile.mkdtemp())
         (directory / "composer.json").write_text(json.dumps(
@@ -410,10 +425,53 @@ def case_php_refuses_a_disabled_packagist(module):
         try:
             module.refuse_an_undated_ignore("php", directory)
         except module.CouldNotScan as problem:
-            assert "packagist.org" in str(problem), (repositories, problem)
+            assert "packagist" in str(problem), (repositories, problem)
             continue
         raise AssertionError(
             f"a composer.json with no advisory source was audited as if clean: {repositories}")
+
+
+def case_php_refuses_the_legacy_packagist_name(module):
+    """Composer's Config::merge treats "packagist" as packagist.org, so the
+    legacy name switches the same repository off."""
+    for repositories in ([{"packagist": False}], {"packagist": False}):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": repositories}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert "packagist" in str(problem), (repositories, problem)
+            continue
+        raise AssertionError(
+            f"the legacy name switched packagist off and was accepted: {repositories}")
+
+
+def case_php_refuses_a_redefined_packagist(module):
+    """A named entry for packagist REPLACES the default repository, so a mirror
+    there decides what the audit is told."""
+    for repositories in (
+            {"packagist.org": {"type": "composer", "url": "https://mirror.example.invalid"}},
+            [{"packagist": {"type": "composer", "url": "https://mirror.example.invalid"}}]):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": repositories}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert "replaces the default repository" in str(problem), (repositories, problem)
+            continue
+        raise AssertionError(f"a mirror was accepted as packagist: {repositories}")
+
+
+def case_php_allows_packagist_defined_at_its_own_url(module):
+    """Naming packagist at its own URL changes nothing, so it is not refused."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture",
+         "repositories": {"packagist.org": {"type": "composer",
+                                            "url": "https://repo.packagist.org/"}}}))
+    module.refuse_an_undated_ignore("php", directory)
 
 
 def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
@@ -605,10 +663,14 @@ CASES = [
     case_php_allows_a_composer_config_without_ignores,
     case_node_refuses_another_registry,
     case_node_refuses_a_pruned_install,
+    case_node_refuses_a_bare_key,
     case_node_allows_the_default_registry,
     case_elixir_refuses_a_git_dependency,
     case_a_mix_lock_of_hex_packages_is_not_refused,
     case_php_refuses_a_disabled_packagist,
+    case_php_refuses_the_legacy_packagist_name,
+    case_php_refuses_a_redefined_packagist,
+    case_php_allows_packagist_defined_at_its_own_url,
     case_an_ecosystem_without_an_ignore_file_is_left_alone,
     case_python_reads_the_build_backends_requirements,
     case_python_with_no_pyproject_has_no_build_requirements,
