@@ -363,7 +363,7 @@ jobs:
           %% What a block is.
 
           classify(Doc, #{line := L, body := Body0} = Block0) ->
-              Body = [{N, elided(Line)} || {N, Line} <- Body0],
+              Body = elided(Body0, none, []),
               Block = Block0#{body := Body},
               case lists:any(fun({_, Line}) -> re:run(Line, ?PROMPT, [{capture, none}, unicode]) =:= match end, Body) of
                   true -> shell(Doc, Block);
@@ -389,7 +389,7 @@ jobs:
                               %% gets it, as the classification above did.
                               Ended = case element(1, lists:last(Tokens)) of
                                           dot -> Text;
-                                          _ -> Text ++ "."
+                                          _ -> Text ++ "\n."
                                       end,
                               {case Module of true -> module; false -> forms end,
                                #{first => First, text => Ended}};
@@ -399,9 +399,25 @@ jobs:
               end.
 
           %% A line that is only `...` (with its comma, if any) is code the doc leaves
-          %% out on purpose; Erlang never writes it, so it is read as `ok`.
-          elided(Line) ->
-              re:replace(Line, "^(\\s*)\\.\\.\\.(\\s*,?\\s*)$", "\\1ok\\2", [unicode, {return, list}]).
+          %% out on purpose; Erlang never writes it. Inside a body it stands for
+          %% expressions and is read as `ok`; after a clause or a form (the line before
+          %% ends in `;` or `.`, or there is none) it stands for clauses and is dropped.
+          elided([], _, Acc) -> lists:reverse(Acc);
+          elided([{N, Line} | Rest], Previous, Acc) ->
+              case re:run(Line, "^(\\s*)\\.\\.\\.(\\s*,?\\s*)$", [unicode, {capture, all_but_first, list}]) of
+                  {match, [Indent, Tail]} ->
+                      Elided = case boundary(Previous) of
+                                   true -> "";
+                                   false -> Indent ++ "ok" ++ Tail
+                               end,
+                      elided(Rest, Previous, [{N, Elided} | Acc]);
+                  nomatch ->
+                      Code = string:trim(hd(string:split(Line, "%"))),
+                      elided(Rest, case Code of "" -> Previous; _ -> Code end, [{N, Line} | Acc])
+              end.
+
+          boundary(none) -> true;
+          boundary(Code) -> lists:member(lists:last(Code), ";.").
 
           %% A shell session: lines behind a prompt start an expression, lines after an
           %% unfinished expression continue it, and every other line is output.
@@ -687,7 +703,9 @@ jobs:
                       end;
                   {error, _} ->
                       case claims_package(M) of
-                          true -> io_lib:format("calls ~p:~p/~p, and no module ~p is on the code path",
+                          true -> io_lib:format("calls ~p:~p/~p, and no module ~p is on the code path "
+                                                "(if it is the reader's own module, name it without "
+                                                "the application's prefix, or mark the block skip)",
                                                 [M, F, A, M]);
                           %% my_service_sup, project_tube_store: the reader's own module,
                           %% as a local function the block calls is the reader's own.

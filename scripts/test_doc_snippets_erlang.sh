@@ -188,6 +188,10 @@ with_block "a module of the reader's own app is the reader's" 0 "0 failure(s)" \
   '```erlang' '-module(my_counter_app).' '-export([start/1]).' 'start(_) -> my_counter_sup:start_link().' '```'
 with_block "a line that is only ... is elided code" 0 "0 failure(s)" \
   '```erlang' 'handle(T) ->' '    N = fixture_counter:count(T),' '    ...' '```'
+with_block "a ... standing for elided clauses" 0 "0 failure(s)" \
+  '```erlang' 'handle_call(count, _From, S) -> {reply, fixture_counter:count(S), S};' '...' 'handle_call(_, _From, S) -> {reply, ok, S}.' '```'
+with_block "a forms block ending in a comment, without its full stop" 0 "0 failure(s)" \
+  '```erlang' 'start() ->' '    fixture_counter:new(a)' '%% the reader carries on here' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \
