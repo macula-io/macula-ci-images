@@ -99,6 +99,31 @@ rm -rf "$WORK/noautoload/vendor"
 run_case "a package whose dependencies are not installed cannot be checked" 2 \
   "run composer install first" python3 "$CHECK" "$WORK/noautoload"
 
+# A toolchain that fails without naming a block must never read as a pass: PHPStan
+# exits 1 for its own command exceptions, and a package whose autoload throws is one.
+cp -r "$WORK/good" "$WORK/bootfail"
+cat > "$WORK/bootfail/src/boot.php" <<'PHP'
+<?php
+
+throw new \RuntimeException('boot');
+PHP
+python3 - "$WORK/bootfail/composer.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+package = json.load(open(path))
+package["autoload"]["files"] = ["src/boot.php"]
+json.dump(package, open(path, "w"), indent=2)
+PY
+composer --working-dir="$WORK/bootfail" dump-autoload --quiet
+cat >> "$WORK/bootfail/README.md" <<'MD'
+
+```php
+new \FixtureCounter\Nope();
+```
+MD
+run_case "a toolchain that fails without naming a block is not a pass" 2 \
+  "without naming a block" python3 "$CHECK" "$WORK/bootfail"
+
 n=0
 with_block() {
   local name="$1" expected="$2" want="$3" dir

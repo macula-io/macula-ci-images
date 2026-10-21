@@ -394,13 +394,17 @@ jobs:
                   outside = []
                   by_path = {str(path): (doc, start, mapping, kind)
                              for doc, start, kind, path, mapping in written}
+                  on_a_block = 0
                   for line in (analysis.stdout + "\n" + analysis.stderr).splitlines():
                       error = PHPSTAN_ERROR.match(line.strip())
                       if not error:
                           continue
-                      if error.group("path") not in by_path:
+                      # A line PHPStan cannot place names no file, as `?:?:` does: it is
+                      # about the run, not about a block.
+                      if "?" in error.group("path") or error.group("path") not in by_path:
                           outside.append(line.strip())
                           continue
+                      on_a_block += 1
                       doc, start, mapping, kind = by_path[error.group("path")]
                       line_number = int(error.group("line"))
                       message = IDENTIFIER.sub("", error.group("msg")).strip()
@@ -414,9 +418,13 @@ jobs:
                       for path, line, message in sorted(set(failures)):
                           print(f"{path}:{line}: {message}")
                       return 2
-                  if analysis.returncode not in (0, 1):
-                      print(f"doc_snippets: phpstan itself failed (exit {analysis.returncode}):\n  "
-                            f"{analysis.stderr.strip()[:2000]}", file=sys.stderr)
+                  # PHPStan exits 1 for its own command exceptions too, so an exit 1 with no
+                  # error it placed on a block is not a pass: a package whose autoload
+                  # throws prints "In boot.php line 2: boot" and its usage text.
+                  if analysis.returncode not in (0, 1) or (analysis.returncode == 1 and not on_a_block):
+                      shown = (analysis.stdout + "\n" + analysis.stderr).strip()[-2000:]
+                      print(f"doc_snippets: phpstan failed (exit {analysis.returncode}) without naming a "
+                            f"block, so nothing here can be trusted:\n  {shown}", file=sys.stderr)
                       for path, line, message in sorted(set(failures)):
                           print(f"{path}:{line}: {message}")
                       return 2

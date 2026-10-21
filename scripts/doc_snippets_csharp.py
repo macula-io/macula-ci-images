@@ -199,8 +199,19 @@ def target_framework(root, projects):
         for candidate in property_files(root, project):
             found = TARGET_FRAMEWORK.search(Path(candidate).read_text(errors="replace"))
             if found:
-                return found.group(1).split(";")[0].strip()
+                return first_net(found.group(1).split(";"))
     return None
+
+
+def first_net(frameworks):
+    """The first framework a generated project can be built for. A package that
+    also targets netstandard2.0 must not hand C# 7.3 to a block written for the
+    modern language, since implicit usings and nullable need more than that."""
+    named = [framework.strip() for framework in frameworks if framework.strip()]
+    for framework in named:
+        if re.match(r"^net\d", framework):
+            return framework
+    return named[0] if named else None
 
 
 def property_files(root, project):
@@ -320,12 +331,6 @@ def main(argv):
         for doc in sorted(read):
             carried = []
             for start, word, marker, body in blocks((root / doc).read_text(errors="replace")):
-                own, rest = split_usings(body)
-                seen = {text for _, text in carried}
-                for number, text in own:
-                    if text not in seen:
-                        carried.append((number, text))
-                        seen.add(text)
                 if word not in LANGUAGES:
                     continue
                 if marker and marker[0] == "skip":
@@ -335,9 +340,18 @@ def main(argv):
                 if marker:
                     failures.append((doc, start, f"unknown marker '{marker[0]}'"))
                     continue
+                own, rest = split_usings(body)
                 code = code_lines(rest)
                 if not code:
                     continue
+                # Only a block this check reads carries its usings on: a block in
+                # another language, or one skipped as a counter-example, lends
+                # nothing to the page below it.
+                seen = {text for _, text in carried}
+                for number, text in own:
+                    if text not in seen:
+                        carried.append((number, text))
+                        seen.add(text)
                 index = len(written)
                 (work / "snippets" / f"s{index}.cs").write_text(
                     snippet_file(index, str(root / doc), carried, rest, kind_of(code)))
@@ -352,7 +366,8 @@ def main(argv):
 
     if build is not None:
         outside, found = [], []
-        for line in (build.stdout + "\n" + build.stderr).splitlines():
+        output = (build.stdout + "\n" + build.stderr).splitlines()
+        for line in output:
             stripped = line.strip()
             error = ERROR.match(stripped)
             if error:
@@ -368,6 +383,17 @@ def main(argv):
             shown = "\n  ".join(outside[:10])
             print(f"doc_snippets: the compiler failed outside the docs read, so nothing "
                   f"here can be trusted:\n  {shown}", file=sys.stderr)
+            for path, line, message in sorted(set(failures)):
+                print(f"{path}:{line}: {message}")
+            return 2
+        # A build that fails without a diagnostic this check can place is not a
+        # pass: a missing SDK prints "A compatible .NET SDK was not found", which
+        # has no path and no line, and a repository that pins an SDK the runner
+        # does not have is common.
+        if build.returncode != 0 and not found:
+            shown = "\n  ".join(line.strip() for line in output if line.strip())[-2000:]
+            print(f"doc_snippets: dotnet failed (exit {build.returncode}) without naming a "
+                  f"block, so nothing here can be trusted:\n  {shown}", file=sys.stderr)
             for path, line, message in sorted(set(failures)):
                 print(f"{path}:{line}: {message}")
             return 2

@@ -97,6 +97,19 @@ printf '%s\n' 'namespace FixtureCounter;' 'public sealed class Broken { public v
 run_case "a package that does not build is not a pass" 2 "failed outside the docs read" \
   python3 "$CHECK" "$WORK/broken"
 
+# A toolchain that cannot run must never read as a pass: a repository pinning an
+# SDK the runner does not have prints no diagnostic this check can place.
+cp -r "$WORK/good" "$WORK/nosdk"
+printf '%s\n' '{"sdk":{"version":"99.0.100","rollForward":"disable"}}' > "$WORK/nosdk/global.json"
+cat >> "$WORK/nosdk/README.md" <<'MD'
+
+```csharp
+Tally.Bump();
+```
+MD
+run_case "a toolchain that cannot run is not a pass" 2 "without naming a block" \
+  python3 "$CHECK" "$WORK/nosdk"
+
 n=0
 with_block() {
   local name="$1" expected="$2" want="$3" dir
