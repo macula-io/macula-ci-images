@@ -301,7 +301,9 @@ backlogs and registers):
 Every remote call with a literal module and function must then reach an exported
 function on the code path, which the compiler alone does not check: an example that
 calls an API that is gone fails here. A record a block uses comes from the header that
-defines it, the repository's or a dependency's, so a doc needs no `-include`.
+defines it, the repository's or a dependency's, so the check needs no `-include`; a
+reader pasting that block into a shell still needs `rr/1` or an `-include_lib`, so the
+doc should say which. A module block is compiled as it stands, with its own includes.
 
 Two markers, as an HTML comment on the line before the fence, which every renderer
 hides:

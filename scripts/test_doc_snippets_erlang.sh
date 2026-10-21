@@ -97,6 +97,9 @@ mkdir -p "$WORK/bare"
 run_case "a checkout that was never compiled cannot be checked" 2 "rebar3 compile first" \
   escript "$CHECK" "$WORK/bare"
 
+run_case "a timeout that is not a number is a usage error" 2 "usage:" \
+  escript "$CHECK" --timeout soon "$WORK/good"
+
 # with_block <name> <expected exit> <expected text> <block lines...>
 # A copy of the compiled fixture whose README ends with the given lines.
 n=0

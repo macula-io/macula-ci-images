@@ -38,8 +38,10 @@
 #                 body, so a variable a block binds is bound in the next
 #
 # and every remote call with a literal module and function reaches an exported
-# function on the code path, which the compiler alone does not check. Records come
-# from the header that defines them, the repository's or a dependency's.
+# function on the code path, which the compiler alone does not check. Records a
+# session or a forms block uses come from the header that defines them, the
+# repository's or a dependency's; a reader pasting that block still needs rr/1 or an
+# -include_lib, so the doc should say which. A module block carries its own includes.
 #
 # MARKERS, an HTML comment on the line before the fence:
 #
@@ -142,7 +144,9 @@ jobs:
           %% function of a module on the code path, so an example that calls an API that
           %% is gone fails here even though the compiler accepts it. Records a session or a
           %% forms block uses are taken from the header that defines them, in the repo's
-          %% include/ directories or its dependencies'.
+          %% include/ directories or its dependencies'. A reader who pastes such a block
+          %% into a shell still needs rr/1 or an -include_lib: the doc should say which.
+          %% A module block is compiled as it stands, so it carries its own includes.
           %%
           %% Markers, an HTML comment on the line before the fence:
           %%
@@ -180,7 +184,10 @@ jobs:
               end.
 
           options(["--timeout", Seconds | Rest], Opts) ->
-              options(Rest, Opts#{timeout => list_to_integer(Seconds)});
+              case string:to_integer(Seconds) of
+                  {N, ""} when N > 0 -> options(Rest, Opts#{timeout => N});
+                  _ -> error
+              end;
           options([Root], Opts) -> {ok, Opts#{root => Root}};
           options(_, _) -> error.
 

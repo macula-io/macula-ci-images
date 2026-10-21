@@ -27,7 +27,9 @@
 %% function of a module on the code path, so an example that calls an API that
 %% is gone fails here even though the compiler accepts it. Records a session or a
 %% forms block uses are taken from the header that defines them, in the repo's
-%% include/ directories or its dependencies'.
+%% include/ directories or its dependencies'. A reader who pastes such a block
+%% into a shell still needs rr/1 or an -include_lib: the doc should say which.
+%% A module block is compiled as it stands, so it carries its own includes.
 %%
 %% Markers, an HTML comment on the line before the fence:
 %%
@@ -65,7 +67,10 @@ main(Args) ->
     end.
 
 options(["--timeout", Seconds | Rest], Opts) ->
-    options(Rest, Opts#{timeout => list_to_integer(Seconds)});
+    case string:to_integer(Seconds) of
+        {N, ""} when N > 0 -> options(Rest, Opts#{timeout => N});
+        _ -> error
+    end;
 options([Root], Opts) -> {ok, Opts#{root => Root}};
 options(_, _) -> error.
 
