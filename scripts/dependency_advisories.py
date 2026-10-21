@@ -34,12 +34,16 @@ unless someone looks at it again. A row without a why, an owner or an expiry is
 refused the same way.
 
 The waivers file is the only way to waive. Several scanners also read a config
-file from the repository they run in, and an ignore list there would waive with
-no date, no owner and no why, so such a config is refused instead (exit 2,
-naming the file): cargo audit's .cargo/audit.toml and composer audit's
-composer.json "config": {"audit": {"ignore": ...}}. Likewise a rebar.lock that
-pins a git or path dependency is refused: it ships, but no advisory database can
-look it up, so the scanned set would quietly be smaller than the shipped set.
+file from the repository they run in, and more than one key there can drop a
+finding with no date, no owner and no why, so those files are checked against an
+allow-list rather than a list of refusals: cargo audit's .cargo/audit.toml may
+carry [output], [yanked] and [advisories] informational_warnings and nothing
+else; composer audit's composer.json config.audit may carry abandoned,
+block-insecure and block-abandoned and nothing else; and a committed .npmrc may
+not point npm audit at another registry. Anything else is refused, naming the
+key (exit 2). Likewise a rebar.lock that pins a git or path dependency is
+refused: it ships, but no advisory database can look it up, so the scanned set
+would quietly be smaller than the shipped set.
 
 Usage:
   dependency_advisories.py --ecosystem node [--working-directory .]
@@ -569,48 +573,126 @@ SCANNERS = {
 
 # --------------------------------------------------------------------------
 # A repository's own scanner config. Every scanner that reads one honours it
-# silently, so an ignore list there is a waiver without a date, an owner or a
-# why, and it is refused rather than obeyed.
+# silently, and more than one key there can drop a finding: an ignore list, a
+# severity threshold, another advisory database, composer's ignore-severity.
+# So the rule is an allow-list: what a config may carry is the set of keys that
+# cannot hide anything, and every other key is refused by name.
+
+# cargo audit's .cargo/audit.toml: [output] and [yanked] whole, and inside
+# [advisories] only informational_warnings. Not ignore, not severity_threshold,
+# not a [database] pointing at a fork with the entry removed, not [target].
+CARGO_AUDIT_SECTIONS = {"output", "yanked", "advisories"}
+CARGO_AUDIT_ADVISORIES_KEYS = {"informational_warnings"}
+
+# composer audit's composer.json config.audit: what Composer 2.8 documents as
+# not dropping a finding. Not ignore, not ignore-severity, not
+# ignore-unreachable.
+COMPOSER_AUDIT_KEYS = {"abandoned", "block-insecure", "block-abandoned"}
+
+NPM_DEFAULT_REGISTRY = "https://registry.npmjs.org/"
 
 
 def rust_ignores(cwd):
-    """cargo audit reads .cargo/audit.toml from the project it runs in, and its
-    [advisories] ignore list silences advisories."""
-    path = cwd / ".cargo/audit.toml"
-    if not path.exists():
-        return None
-    document = toml_file(path)
-    advisories = document.get("advisories") or {}
-    if "ignore" not in advisories:
-        return None
-    return (f"{path} carries an [advisories] ignore list, which waives with no date, "
-            "owner or reason; a waiver belongs in .github/advisories-waivers.txt")
+    """The .cargo/audit.toml cargo audit reads for this project, wherever cargo
+    finds it: the working directory or, in a workspace, a parent of it."""
+    for directory in to_repository_root(cwd):
+        path = directory / ".cargo/audit.toml"
+        if not path.exists():
+            continue
+        refused = unallowed_keys(toml_file(path), CARGO_AUDIT_SECTIONS,
+                                 CARGO_AUDIT_ADVISORIES_KEYS)
+        if refused:
+            return (f"{path} carries {refused}; only [output], [yanked] and "
+                    "[advisories] informational_warnings may be set, because every "
+                    "other key can drop a finding with no date and no owner. A waiver "
+                    "belongs in .github/advisories-waivers.txt")
+    return None
+
+
+def unallowed_keys(document, sections, advisories):
+    """The keys of a scanner config that are not on the allow-list, named by
+    their path in the file. A section whose value is not a table is refused
+    rather than guessed at."""
+    refused = []
+    for key, value in document.items():
+        if key not in sections:
+            refused.append(key)
+        elif key == "advisories" and is_table(value):
+            refused += [f"advisories.{inner}" for inner in value
+                        if inner not in advisories]
+        elif key == "advisories":
+            refused.append("advisories")
+    return ", ".join(sorted(refused))
+
+
+def is_table(value):
+    return isinstance(value, dict)
 
 
 def php_ignores(cwd):
-    """composer audit honours "config": {"audit": {"ignore": [...]}} in
-    composer.json (Composer 2.6 and later)."""
+    """composer audit honours composer.json "config": {"audit": {...}}: the keys
+    Composer 2.6 and 2.8 add there can silence a package or a severity."""
     path = cwd / "composer.json"
     if not path.exists():
         return None
     document = load_json(path.read_text(errors="replace"), str(path))
-    ignore = ((document.get("config") or {}).get("audit") or {}).get("ignore")
-    if ignore is None:
+    audit = (document.get("config") or {}).get("audit")
+    if audit is None:
         return None
-    return (f"{path} carries config.audit.ignore, which waives with no date, owner or "
-            "reason; a waiver belongs in .github/advisories-waivers.txt")
+    if not is_table(audit):
+        return f"{path} carries config.audit, which is not a table; it cannot be read"
+    refused = sorted(key for key in audit if key not in COMPOSER_AUDIT_KEYS)
+    if not refused:
+        return None
+    return (f"{path} carries {', '.join('config.audit.' + key for key in refused)}; "
+            "only abandoned, block-insecure and block-abandoned may be set, because "
+            "every other key can drop a finding with no date and no owner. A waiver "
+            "belongs in .github/advisories-waivers.txt")
+
+
+def npm_registry(cwd):
+    """npm audit asks the registry a .npmrc names. A committed registry=http://...
+    decides which database answers, so a mirror that has never heard of an
+    advisory would read as a clean repository."""
+    for directory in to_repository_root(cwd):
+        path = directory / ".npmrc"
+        if not path.exists():
+            continue
+        for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+            key, _, value = line.partition("=")
+            if key.strip() != "registry":
+                continue
+            named = value.strip().rstrip("/") + "/"
+            if named != NPM_DEFAULT_REGISTRY:
+                return (f"{path}:{number} scans a registry other than "
+                        f"{NPM_DEFAULT_REGISTRY} ({named}), so an advisory it has not "
+                        "heard of would read as clean; remove the line or say why here")
+    return None
+
+
+def to_repository_root(cwd):
+    """The working directory and its parents, up to the repository root: a
+    scanner that searches upward finds a config above the directory it was
+    pointed at, and never one outside the repository."""
+    directory = cwd
+    while True:
+        yield directory
+        if (directory / ".git").exists() or directory.parent == directory:
+            return
+        directory = directory.parent
 
 
 # Which ecosystems read a config file of their own, and the reader that refuses
-# it. The rest read none: govulncheck, npm audit and pip-audit take no ignore
-# file, and osv-scanner reads an osv-scanner.toml only from the directory it is
-# pointed at, which is the work directory and never the repository. dotnet list
-# package --vulnerable does not consult NuGetAuditSuppress: that item filters
-# the restore-time audit's warnings, and the listing command asks the sources
-# for the resolved packages itself (NuGet.Client keeps the two apart).
+# it. The rest read none: govulncheck and pip-audit take no config file, and
+# osv-scanner reads an osv-scanner.toml only from the directory it is pointed
+# at, which is the work directory and never the repository. dotnet list package
+# --vulnerable does not consult NuGetAuditSuppress: that item filters the
+# restore-time audit's warnings, and the listing command asks the sources for
+# the resolved packages itself (NuGet.Client keeps the two apart).
 IGNORE_CONFIGS = {
     "rust": rust_ignores,
     "php": php_ignores,
+    "node": npm_registry,
 }
 
 

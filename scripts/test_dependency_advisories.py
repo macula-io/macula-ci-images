@@ -254,8 +254,57 @@ def case_rust_refuses_a_cargo_audit_ignore_list(module):
 def case_rust_allows_a_cargo_audit_config_without_ignores(module):
     directory = Path(tempfile.mkdtemp())
     (directory / ".cargo").mkdir()
-    (directory / ".cargo/audit.toml").write_text("[advisories]\nyanked = \"deny\"\n")
+    (directory / ".cargo/audit.toml").write_text(
+        "[output]\nformat = \"json\"\n\n[yanked]\n\n"
+        "[advisories]\ninformational_warnings = [\"unmaintained\"]\n")
     module.refuse_an_undated_ignore("rust", directory)
+
+
+def case_rust_refuses_a_severity_threshold(module):
+    """"ignore" is one key of several that drops a finding: a threshold below
+    the advisory's severity hides it just as well, with no list to read."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".cargo").mkdir()
+    (directory / ".cargo/audit.toml").write_text(
+        "[advisories]\nseverity_threshold = \"critical\"\n")
+    try:
+        module.refuse_an_undated_ignore("rust", directory)
+    except module.CouldNotScan as problem:
+        assert "advisories.severity_threshold" in str(problem), problem
+        return
+    raise AssertionError("a severity threshold hid advisories and was accepted")
+
+
+def case_rust_refuses_another_advisory_database(module):
+    """[database] url points cargo audit at a fork, which need not carry the
+    entry at all."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".cargo").mkdir()
+    (directory / ".cargo/audit.toml").write_text(
+        "[database]\nurl = \"https://example.invalid/advisory-db.git\"\n")
+    try:
+        module.refuse_an_undated_ignore("rust", directory)
+    except module.CouldNotScan as problem:
+        assert "database" in str(problem), problem
+        return
+    raise AssertionError("a different advisory database was accepted")
+
+
+def case_rust_reads_a_workspace_root_config(module):
+    """cargo finds the config above the crate it builds, so a crate under a
+    workspace inherits the workspace root's file."""
+    root = Path(tempfile.mkdtemp())
+    (root / ".git").mkdir()
+    (root / ".cargo").mkdir()
+    (root / ".cargo/audit.toml").write_text("[advisories]\nignore = [\"RUSTSEC-1\"]\n")
+    crate = root / "native/crate"
+    crate.mkdir(parents=True)
+    try:
+        module.refuse_an_undated_ignore("rust", crate)
+    except module.CouldNotScan as problem:
+        assert ".cargo/audit.toml" in str(problem), problem
+        return
+    raise AssertionError("the workspace root's audit config was not read")
 
 
 def case_php_refuses_a_composer_audit_ignore_list(module):
@@ -271,11 +320,48 @@ def case_php_refuses_a_composer_audit_ignore_list(module):
     raise AssertionError("composer audit's ignore list was obeyed instead of refused")
 
 
+def case_php_refuses_an_ignored_severity(module):
+    """Composer 2.8 adds ignore-severity and ignore-unreachable: the first hides
+    every advisory below a severity, the second hides a package nobody calls."""
+    for key in ("ignore-severity", "ignore-unreachable"):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "config": {"audit": {key: True}}}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert f"config.audit.{key}" in str(problem), problem
+            continue
+        raise AssertionError(f"config.audit.{key} was accepted")
+
+
 def case_php_allows_a_composer_config_without_ignores(module):
     directory = Path(tempfile.mkdtemp())
     (directory / "composer.json").write_text(json.dumps(
-        {"name": "macula/fixture", "config": {"sort-packages": True}}))
+        {"name": "macula/fixture",
+         "config": {"sort-packages": True,
+                    "audit": {"abandoned": "report", "block-insecure": True}}}))
     module.refuse_an_undated_ignore("php", directory)
+
+
+def case_node_refuses_another_registry(module):
+    """npm audit asks the registry .npmrc names: a mirror that has never heard
+    of the advisory would answer clean."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".npmrc").write_text("registry=https://npm.example.invalid/\n")
+    try:
+        module.refuse_an_undated_ignore("node", directory)
+    except module.CouldNotScan as problem:
+        assert ".npmrc" in str(problem), problem
+        return
+    raise AssertionError("a rewritten registry was scanned as if it were npm's")
+
+
+def case_node_allows_the_default_registry(module):
+    directory = Path(tempfile.mkdtemp())
+    (directory / ".npmrc").write_text(
+        "registry=https://registry.npmjs.org/\nengine-strict=true\n")
+    module.refuse_an_undated_ignore("node", directory)
 
 
 def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
@@ -459,8 +545,14 @@ CASES = [
     case_a_lock_of_released_packages_is_not_refused,
     case_rust_refuses_a_cargo_audit_ignore_list,
     case_rust_allows_a_cargo_audit_config_without_ignores,
+    case_rust_refuses_a_severity_threshold,
+    case_rust_refuses_another_advisory_database,
+    case_rust_reads_a_workspace_root_config,
     case_php_refuses_a_composer_audit_ignore_list,
+    case_php_refuses_an_ignored_severity,
     case_php_allows_a_composer_config_without_ignores,
+    case_node_refuses_another_registry,
+    case_node_allows_the_default_registry,
     case_an_ecosystem_without_an_ignore_file_is_left_alone,
     case_python_reads_the_build_backends_requirements,
     case_python_with_no_pyproject_has_no_build_requirements,
