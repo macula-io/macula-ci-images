@@ -105,8 +105,12 @@ jobs:
           import it does not use, a return that has no function around it. Everything
           about the module is still checked: a function, field, method or type that is
           not there, a wrong argument, the syntax. A misspelt local is a free identifier
-          too, so nothing catches it, and neither is a method called on a free
-          identifier (p.Call(...) with no p in the block): its type is not known.
+          too, so nothing catches it, nor a misspelt package name (countr.New), nor a
+          method called on a free identifier (p.Call(...) with no p in the block): its
+          type is not known. A misspelt member of a package (os.ReadFil) is caught. A
+          block of top-level funcs is the reader's own code and is held to the compiler
+          but for the names it leaves to the prose; a block with a package clause is
+          held to it entirely.
 
           Markers, an HTML comment on the line before the fence:
 
@@ -138,20 +142,28 @@ jobs:
           IMPORT_LINE = re.compile(r'^import\s+(?:\w+\s+)?"[^"]+"\s*$')
           GOIMPORTS = os.environ.get("GOIMPORTS", "golang.org/x/tools/cmd/goimports@v0.29.0")
 
-          # What only a fragment produces. A dotted name (pkg.Func) is never in here: a
-          # missing package member is the module's fault, not the fragment's.
-          FRAGMENT_ONLY = [
+          # What only a fragment produces, by what the block is. A dotted name
+          # (pkg.Func) is never in here: a missing package member is the module's fault,
+          # not the fragment's. A file block gets none of these: it is built as it stands.
+          #
+          # A block of top-level funcs is the reader's own code, complete as far as it
+          # goes: only a name it leaves to the prose, and an import goimports made for
+          # it, are excused.
+          DECLS_ONLY = [
               re.compile(r"^undefined: [A-Za-z_][A-Za-z0-9_]*$"),
-              re.compile(r"declared and not used"),
               re.compile(r'"[^"]+" imported and not used'),
+          ]
+          # A block of statements also has no function around it, so a return has none
+          # to match, and it may list alternatives that bind the same names twice.
+          STATEMENTS_ONLY = DECLS_ONLY + [
+              re.compile(r"declared and not used"),
               re.compile(r"^too many return values"),
               re.compile(r"^not enough return values"),
               re.compile(r"^missing return$"),
               re.compile(r"^label \S+ defined and not used$"),
-              # A block that lists alternatives (connect this way, or this way) binds the
-              # same names twice.
               re.compile(r"^no new variables on left side of :=$"),
           ]
+          EXCUSED = {"file": [], "decls": DECLS_ONLY, "statements": STATEMENTS_ONLY}
           ERROR = re.compile(r"^(?:\S*?/)?(?P<path>[^:\s]+\.md):(?P<line>\d+)(?::\d+)?: (?P<msg>.*)$")
 
 
@@ -244,8 +256,9 @@ jobs:
               lines = [t for n, t in rest if n >= first]
               text = "".join(t + "\n" for t in lines)
               if any(TOP_FUNC.match(t) for _, t in code):
-                  return ["package snippet\n\n", f"//line {doc}:{first}\n", text], imports
-              return ["package snippet\n\n", "func _() {\n", f"//line {doc}:{first}\n", text, "}\n"], imports
+                  return ("decls", ["package snippet\n\n", f"//line {doc}:{first}\n", text]), imports
+              return ("statements", ["package snippet\n\n", "func _() {\n", f"//line {doc}:{first}\n",
+                                     text, "}\n"]), imports
 
 
           def imports_of(go_file):
@@ -258,6 +271,23 @@ jobs:
                   paths += [line.strip() for line in block.group(1).splitlines()
                             if line.strip() and not line.strip().startswith("//")]
               return paths
+
+
+          def package_names(root):
+              """Every package name a block can mean: the module's own, the standard
+              library's and the module's dependencies'. A bare `undefined: os` is never a
+              free identifier: goimports added no import because the member the block
+              uses is not there."""
+              names = module_packages(root)
+              for args in (["go", "list", "-f", "{{.ImportPath}} {{.Name}}", "std"],
+                           ["go", "list", "-deps", "-f", "{{.ImportPath}} {{.Name}}", "./..."]):
+                  out = subprocess.run(args, cwd=root, capture_output=True, text=True)
+                  for line in out.stdout.splitlines():
+                      path, _, name = line.partition(" ")
+                      if name and name != "main" and "internal" not in path.split("/") \
+                              and "vendor" not in path.split("/"):
+                          names.add(name)
+              return names
 
 
           def module_packages(root):
@@ -311,32 +341,36 @@ jobs:
                           if marker:
                               failures.append((doc, start, f"unknown marker '{marker[0]}'"))
                               continue
-                          parts, imports = source(str(root / doc), body)
-                          if parts is None and imports is None:
+                          shaped, imports = source(str(root / doc), body)
+                          if shaped is None and imports is None:
                               continue
-                          if parts is None:
+                          if shaped is None:
                               # A whole file: built as it stands, imports and all.
-                              files.append((doc, start, imports))
+                              files.append((doc, start, "file", imports))
                               continue
+                          kind, parts = shaped
                           index = len(built)
-                          (scratch / f"b{index}.go").write_text(
+                          # A directory per block: goimports reads a file's siblings, and a
+                          # name one block declares must not stand in for another's import.
+                          (scratch / f"b{index}").mkdir()
+                          (scratch / f"b{index}" / "b.go").write_text(
                               "".join(parts[:1]) + "".join(f"import {i}\n" for i in imports)
                               + "".join(parts[1:]))
-                          built.append((doc, start, parts, imports))
+                          built.append((doc, start, kind, parts))
                   if built:
                       run = subprocess.run(["go", "run", GOIMPORTS, "-w", str(scratch)], cwd=root,
                                            capture_output=True, text=True)
                       if run.returncode != 0 and not run.stdout and "expected" not in run.stderr:
                           print(f"doc_snippets: goimports failed: {run.stderr.strip()}", file=sys.stderr)
                           return 2
-                  packages_here = module_packages(root)
+                  packages_here = package_names(root)
                   packages = []
-                  for index, (doc, start, parts, own) in enumerate(built):
-                      found = imports_of(scratch / f"b{index}.go")
+                  for index, (doc, start, kind, parts) in enumerate(built):
+                      found = imports_of(scratch / f"b{index}" / "b.go")
                       header = parts[:1] + ([f"import (\n\t" + "\n\t".join(found) + "\n)\n"] if found else [])
-                      packages.append((doc, start, "".join(header + parts[1:])))
-                  packages += [(doc, start, "".join(text)) for doc, start, text in files]
-                  for index, (doc, start, text) in enumerate(packages):
+                      packages.append((doc, start, kind, "".join(header + parts[1:])))
+                  packages += [(doc, start, kind, "".join(text)) for doc, start, kind, text in files]
+                  for index, (doc, start, kind, text) in enumerate(packages):
                       package = work / f"b{index}"
                       package.mkdir(parents=True)
                       (package / "main.go").write_text(text)
@@ -349,14 +383,14 @@ jobs:
                               continue
                           message = error.group("msg")
                           bare = re.match(r"^undefined: ([A-Za-z_]\w*)$", message)
-                          if bare and bare.group(1) in packages_here:
-                              # goimports found no member of that name in the module's
-                              # package, so it added no import: the member is not there.
+                          if bare and bare.group(1) in packages_here and kind != "file":
+                              # goimports found no member of that name in the package, so
+                              # it added no import: the member is not there.
                               failures.append((relative(root, line), int(error.group("line")),
-                                               f"undefined: {bare.group(1)}: the module's package "
+                                               f"undefined: {bare.group(1)}: the package "
                                                f"{bare.group(1)} has no member the block uses"))
                               continue
-                          if any(rule.search(message) for rule in FRAGMENT_ONLY):
+                          if any(rule.search(message) for rule in EXCUSED[kind]):
                               continue
                           failures.append((relative(root, line), int(error.group("line")), message))
                       if out.returncode != 0 and not any(ERROR.match(l.strip()) for l in out.stderr.splitlines()):

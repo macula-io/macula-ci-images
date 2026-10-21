@@ -103,7 +103,7 @@ with_block() {
 }
 
 with_block "a function the package does not have" 1 \
-  "README.md:$CODE: undefined: counter: the module's package counter has no member" \
+  "README.md:$CODE: undefined: counter: the package counter has no member" \
   '```go' 'counter.Reset()' '```'
 with_block "a method a declared value does not have" 1 \
   "README.md:$((CODE + 1)): t.Reset undefined" \
@@ -122,6 +122,18 @@ with_block "a reader's function calling what is not there" 1 \
 with_block "a whole program that does not build" 1 \
   "README.md:$((CODE + 2)): undefined: counter.Start" \
   '```go' 'package main' 'import "example.org/fixturecounter/counter"' 'func main() { counter.Start() }' '```'
+with_block "a standard-library member that is not there" 1 \
+  "README.md:$CODE: undefined: os: the package os has no member" \
+  '```go' 'data, err := os.ReadFil("x")' '```'
+with_block "a reader's function returning the wrong count" 1 \
+  "README.md:$CODE: not enough return values" \
+  '```go' 'func Make() (int, error) { return 1 }' '```'
+with_block "a whole program with an unused import" 1 \
+  "README.md:$((CODE + 1)): \"os\" imported and not used" \
+  '```go' 'package main' 'import "os"' 'func main() {}' '```'
+with_block "a name one block declares does not stand in for another's import" 1 \
+  "README.md:$((CODE + 3)): undefined: counter: the package counter has no member" \
+  '```go' 'var counter = 1' '```' '```go' 'counter.Reset()' '```'
 with_block "a skip with no reason" 1 "skip gives no reason" \
   '<!-- doc_snippets: skip -->' '```go' 'nope()' '```'
 with_block "a marker that is not one" 1 "unknown marker 'ignore'" \
