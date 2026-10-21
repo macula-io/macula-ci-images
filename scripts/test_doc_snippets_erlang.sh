@@ -120,9 +120,9 @@ CODE=$((NEXT + 1))
 with_block "a call to a function the package does not export" 1 \
   "README.md:$CODE: fixture_counter:reset/1 is not exported" \
   '```erlang' 'fixture_counter:reset(T2).' '```'
-with_block "a call to a module that is not on the code path" 1 \
-  "README.md:$CODE: calls gone_module:start/0, and no module gone_module" \
-  '```erlang' 'gone_module:start().' '```'
+with_block "a module named as the package's that is not there" 1 \
+  "README.md:$CODE: calls fixture_counter_gone:start/0, and no module fixture_counter_gone" \
+  '```erlang' 'fixture_counter_gone:start().' '```'
 with_block "a fun reference to a missing function" 1 \
   "README.md:$CODE: fixture_counter:count/2 is not exported" \
   '```erlang' 'F = fun fixture_counter:count/2.' '```'
@@ -139,8 +139,8 @@ with_block "a record the package does not define" 1 "README.md:$CODE: record nos
 with_block "forms and expressions in one block" 1 "README.md:$CODE: mixes forms and expressions" \
   '```erlang' '-record(r, {a}).' 'X = 1.' '```'
 with_block "a module whose function calls what is not there" 1 \
-  "README.md:$((CODE + 2)): calls gone_module:go/0" \
-  '```erlang' '-module(doc_case_module).' '-export([f/0]).' 'f() -> gone_module:go().' '```'
+  "README.md:$((CODE + 2)): calls fixture_counter_gone:go/0" \
+  '```erlang' '-module(doc_case_module).' '-export([f/0]).' 'f() -> fixture_counter_gone:go().' '```'
 with_block "forms without a module that use an unbound variable" 1 \
   "README.md:$CODE: variable 'X' is unbound" \
   '```erlang' 'f() -> X.' '```'
@@ -184,6 +184,10 @@ with_block "a spec listing passes once its types resolve" 0 "0 failure(s)" \
   '```erlang' '-spec bump(fixture_counter_tally()) -> ok.' '-type fixture_counter_tally() :: term().' '```'
 with_block "a shape with many free variables passes" 0 "0 failure(s)" \
   '```erlang' '#{type => Type, version => Version, created_at => CreatedAtMs,' '  expires_at => ExpiresAtMs, payload => Payload, subject => Subject}' '```'
+with_block "a module of the reader's own app is the reader's" 0 "0 failure(s)" \
+  '```erlang' '-module(my_counter_app).' '-export([start/1]).' 'start(_) -> my_counter_sup:start_link().' '```'
+with_block "a line that is only ... is elided code" 0 "0 failure(s)" \
+  '```erlang' 'handle(T) ->' '    N = fixture_counter:count(T),' '    ...' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \

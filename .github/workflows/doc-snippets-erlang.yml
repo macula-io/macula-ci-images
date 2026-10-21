@@ -157,7 +157,10 @@ jobs:
           %%
           %% Every remote call with a literal module and function must reach an exported
           %% function of a module on the code path, so an example that calls an API that
-          %% is gone fails here even though the compiler accepts it. Records a session or a
+          %% is gone fails here even though the compiler accepts it. A module that is not
+          %% on the path is the reader's own (my_service_sup) unless its name claims one
+          %% of the compiled applications (macula, macula_recrd): only then is it a
+          %% failure. A line that is only `...` is elided code. Records a session or a
           %% forms block uses are taken from the header that defines them, in the repo's
           %% include/ directories or its dependencies'. A reader who pastes such a block
           %% into a shell still needs rr/1 or an -include_lib: the doc should say which.
@@ -218,6 +221,10 @@ jobs:
                       2;
                   _ ->
                       ok = code:add_pathsa(Ebins),
+                      %% The applications the checkout compiled: a module named after one
+                      %% of them is the package's, not the reader's.
+                      persistent_term:put(doc_snippets_apps,
+                                          [filename:basename(filename:dirname(E)) || E <- Ebins]),
                       Work = work_dir(),
                       Headers = record_headers(Root),
                       Docs = docs(Root),
@@ -355,7 +362,9 @@ jobs:
           %% --------------------------------------------------------------------------
           %% What a block is.
 
-          classify(Doc, #{line := L, body := Body} = Block) ->
+          classify(Doc, #{line := L, body := Body0} = Block0) ->
+              Body = [{N, elided(Line)} || {N, Line} <- Body0],
+              Block = Block0#{body := Body},
               case lists:any(fun({_, Line}) -> re:run(Line, ?PROMPT, [{capture, none}, unicode]) =:= match end, Body) of
                   true -> shell(Doc, Block);
                   false -> source(Doc, L, Body)
@@ -376,12 +385,23 @@ jobs:
                           {[form], []} ->
                               Module = lists:any(fun({form, {attribute, _, module, _}}) -> true;
                                                     (_) -> false end, Kinds),
+                              %% A doc often leaves the last full stop off; the compiler
+                              %% gets it, as the classification above did.
+                              Ended = case element(1, lists:last(Tokens)) of
+                                          dot -> Text;
+                                          _ -> Text ++ "."
+                                      end,
                               {case Module of true -> module; false -> forms end,
-                               #{first => First, text => Text}};
+                               #{first => First, text => Ended}};
                           {[exprs], []} -> {session, [{Chunk, Exprs} || {Chunk, {exprs, Exprs}} <- lists:zip(Chunks, Kinds)]};
                           _ -> {error, {Doc, First, "mixes forms and expressions; split it in two blocks"}}
                       end
               end.
+
+          %% A line that is only `...` (with its comma, if any) is code the doc leaves
+          %% out on purpose; Erlang never writes it, so it is read as `ok`.
+          elided(Line) ->
+              re:replace(Line, "^(\\s*)\\.\\.\\.(\\s*,?\\s*)$", "\\1ok\\2", [unicode, {return, list}]).
 
           %% A shell session: lines behind a prompt start an expression, lines after an
           %% unfinished expression continue it, and every other line is output.
@@ -665,8 +685,22 @@ jobs:
                           true -> ok;
                           false -> io_lib:format("~p:~p/~p is not exported", [M, F, A])
                       end;
-                  {error, _} -> io_lib:format("calls ~p:~p/~p, and no module ~p is on the code path", [M, F, A, M])
+                  {error, _} ->
+                      case claims_package(M) of
+                          true -> io_lib:format("calls ~p:~p/~p, and no module ~p is on the code path",
+                                                [M, F, A, M]);
+                          %% my_service_sup, project_tube_store: the reader's own module,
+                          %% as a local function the block calls is the reader's own.
+                          false -> ok
+                      end
               end.
+
+          %% Is M named as one of the compiled applications' modules: the application
+          %% itself, or <app>_...? A misspelt macula_recrd is; my_service_sup is not.
+          claims_package(M) ->
+              Name = atom_to_list(M),
+              lists:any(fun(App) -> Name =:= App orelse lists:prefix(App ++ "_", Name) end,
+                        persistent_term:get(doc_snippets_apps, [])).
 
           %% --------------------------------------------------------------------------
           %% Running a session, where the doc says to.
