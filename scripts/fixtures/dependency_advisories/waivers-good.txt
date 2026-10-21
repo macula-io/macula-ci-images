@@ -1,0 +1,5 @@
+# advisory | package | why it cannot be fixed yet | owner | expires YYYY-MM-DD
+GHSA-2p57-rm9w-gvfp | undici | dev-only, never shipped; fixed by undici 7 | ceres | 2026-12-31
+
+# A comment and a blank line are both fine.
+RUSTSEC-2026-0374 | basic-toml | unmaintained, not vulnerable; leaves with the next tower-http | ceres | 2026-11-30

@@ -1,0 +1,25 @@
+{
+  "dependencies": [
+    {
+      "name": "requests",
+      "version": "2.31.0",
+      "vulns": [
+        {
+          "id": "GHSA-9wx4-h78v-vm56",
+          "fix_versions": [
+            "2.32.0"
+          ],
+          "aliases": [
+            "CVE-2024-35195"
+          ],
+          "description": "Requests `Session` objects can be tricked into reusing a connection after a certificate verification failure."
+        }
+      ]
+    },
+    {
+      "name": "urllib3",
+      "version": "2.2.1",
+      "vulns": []
+    }
+  ]
+}

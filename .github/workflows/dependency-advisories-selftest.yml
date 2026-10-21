@@ -1,0 +1,55 @@
+# Prove dependency-advisories.yml before any repository calls it.
+#
+# `script` runs scripts/test_dependency_advisories.py against the check as embedded
+# in the workflow: every scanner's recorded output is read the way the tool prints
+# it, every waiver rule holds, and every exit code is the one CI acts on. The
+# recorded outputs need no network and no toolchain.
+#
+# `wired` calls the workflow itself on the fixture package, which proves the call
+# shape, the setup a caller gets and the whole path end to end (resolution, scan,
+# report, exit 0).
+
+name: dependency advisories self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/dependency-advisories.yml'
+      - '.github/workflows/dependency-advisories-selftest.yml'
+      - 'scripts/dependency_advisories.py'
+      - 'scripts/embed_dependency_advisories.sh'
+      - 'scripts/test_dependency_advisories.py'
+      - 'scripts/fixtures/dependency_advisories/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-advisories-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: The YAML reader the test uses
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every scanner's output, every waiver rule, every exit code
+        run: python3 scripts/test_dependency_advisories.py
+
+  wired:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dependency-advisories.yml
+    with:
+      ecosystem: python
+      working-directories: '["scripts/fixtures/dependency_advisories/python"]'

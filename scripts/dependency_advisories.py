@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+"""One ecosystem's known-vulnerable dependencies: a release fails on one.
+
+This exists so no release of ours ships a dependency with a known published
+advisory without its CI refusing it first, and so an attacker cannot rely on a
+vulnerability that is already public sitting in a package of ours
+(macula-codebase-checks#11).
+
+It runs the ecosystem's own scanner over what the release ships, reads the
+repository's waivers, prints what is left, and exits 1 while anything is left
+unwaived. There is no baseline and no "known findings" file: an advisory is
+fixed, or a dated, named waiver says why it cannot be yet and when it must be.
+
+  erlang  rebar3 compile, then the resolved rebar.lock as an SBOM, to osv-scanner
+  elixir  mix deps.get, then mix.lock to osv-scanner
+  go      govulncheck, which reports the vulnerabilities the code can reach
+  rust    cargo audit, its vulnerabilities (an unmaintained crate is a warning)
+  node    npm audit --omit=dev: what ships, not the build tooling
+  php     composer install --no-dev, then composer audit --no-dev
+  python  the package installed into a fresh venv, then pip-audit
+  csharp  dotnet list package --vulnerable --include-transitive
+
+The waivers are a file in the repository, one row per advisory:
+
+  # advisory | package | why it cannot be fixed yet | owner | expires YYYY-MM-DD
+  GHSA-2p57-rm9w-gvfp | undici | dev-only: never shipped; fix lands with undici 7 | ceres | 2026-11-30
+
+An expired waiver fails the run (exit 2), so a waiver cannot outlive its reason
+unless someone looks at it again. A row without a why, an owner or an expiry is
+refused the same way.
+
+Usage:
+  dependency_advisories.py --ecosystem node [--working-directory .]
+                           [--waivers PATH] [--work DIR] [--today YYYY-MM-DD]
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+ECOSYSTEMS = ("erlang", "elixir", "go", "rust", "node", "php", "python", "csharp")
+SCANNER = {
+    "erlang": "osv-scanner on the resolved rebar.lock",
+    "elixir": "osv-scanner on mix.lock",
+    "go": "govulncheck",
+    "rust": "cargo audit",
+    "node": "npm audit --omit=dev",
+    "php": "composer audit --no-dev",
+    "python": "pip-audit",
+    "csharp": "dotnet list package --vulnerable",
+}
+
+
+class CouldNotScan(Exception):
+    """The scan could not run, or its answer could not be read: exit 2."""
+
+
+@dataclass(frozen=True)
+class Finding:
+    advisory: str
+    package: str
+    version: str
+    fixed: str
+    severity: str
+    title: str
+
+
+@dataclass(frozen=True)
+class Waiver:
+    advisory: str
+    package: str
+    why: str
+    owner: str
+    expires: datetime.date
+
+
+# --------------------------------------------------------------------------
+# Running things.
+
+
+def output(command, cwd, ok=(0,)):
+    """One command's stdout, or CouldNotScan. A return code outside `ok` is a
+    failure to scan, never a finding: a broken tool must not read as a clean
+    repository."""
+    try:
+        done = subprocess.run(command, cwd=str(cwd), capture_output=True, text=True,
+                              check=False)
+    except FileNotFoundError as missing:
+        raise CouldNotScan(f"{command[0]} is not installed: {missing}") from missing
+    if done.returncode not in ok:
+        raise CouldNotScan(f"{' '.join(command)} exited {done.returncode}: "
+                           f"{last_lines(done.stderr)}")
+    return done.stdout
+
+
+def last_lines(text, wanted=6):
+    lines = [line for line in (text or "").strip().splitlines() if line.strip()]
+    return " / ".join(lines[-wanted:]) or "no output"
+
+
+def load_json(text, tool):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as broken:
+        raise CouldNotScan(f"{tool} did not print JSON: {broken}") from broken
+
+
+def osv_scanner():
+    return os.environ.get("OSV_SCANNER") or shutil.which("osv-scanner") or "osv-scanner"
+
+
+# --------------------------------------------------------------------------
+# The scanners. Each reads what the release ships and returns Findings.
+
+
+def erlang_findings(cwd, work):
+    """A rebar3 project commits no lock, so the build's resolved one is what is
+    read: rebar3 compile writes rebar.lock from the versions it actually used."""
+    output(["rebar3", "compile"], cwd)
+    lock = cwd / "rebar.lock"
+    if not lock.exists():
+        raise CouldNotScan(f"rebar3 compile wrote no {lock}")
+    packages = rebar_packages(lock)
+    if not packages:
+        raise CouldNotScan(f"{lock} names no package")
+    sbom = work / "sbom.cdx.json"
+    sbom.write_text(json.dumps(cyclonedx(packages), indent=2) + "\n")
+    return osv_findings(work)
+
+
+REBAR_LOCK_ENTRY = re.compile(
+    r'\{\s*<<"([^"]+)">>\s*,\s*\{pkg\s*,\s*<<"([^"]+)">>\s*,\s*<<"([^"]+)">>\s*\}')
+
+
+def rebar_packages(lock):
+    """The {pkg, Name, Version} entries of a rebar.lock, as name to version."""
+    packages = {}
+    for line in lock.read_text(errors="replace").splitlines():
+        entry = REBAR_LOCK_ENTRY.search(line)
+        if entry:
+            packages[entry.group(2)] = entry.group(3)
+    return packages
+
+
+def cyclonedx(packages):
+    """A CycloneDX document osv-scanner reads as Hex packages: rebar.lock has no
+    reader of its own in the scanner, an SBOM does."""
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "components": [
+            {"type": "library", "name": name, "version": version,
+             "purl": f"pkg:hex/{name}@{version}"}
+            for name, version in sorted(packages.items())
+        ],
+    }
+
+
+def elixir_findings(cwd, work):
+    """mix.lock is generated too (and is gitignored in several of our
+    repositories), so deps.get writes it and it is copied where the scanner
+    sees it by name."""
+    output(["mix", "deps.get"], cwd)
+    lock = cwd / "mix.lock"
+    if not lock.exists():
+        raise CouldNotScan(f"mix deps.get wrote no {lock}")
+    shutil.copyfile(lock, work / "mix.lock")
+    return osv_findings(work)
+
+
+def osv_findings(directory):
+    text = output([osv_scanner(), "scan", "source", str(directory), "--format", "json",
+                "--all-vulns"], directory, ok=(0, 1))
+    return parse_osv(load_json(text, "osv-scanner"))
+
+
+def parse_osv(document):
+    found = []
+    for result in document.get("results") or []:
+        for entry in result.get("packages") or []:
+            found += osv_package(entry)
+    return found
+
+
+def osv_package(entry):
+    package = entry.get("package") or {}
+    severity = group_severities(entry)
+    return [Finding(advisory=vuln.get("id", ""),
+                    package=package.get("name", ""),
+                    version=package.get("version", ""),
+                    fixed=", ".join(fixed_versions(vuln)),
+                    severity=severity.get(vuln.get("id"), ""),
+                    title=first_line(vuln.get("summary")))
+            for vuln in entry.get("vulnerabilities") or []]
+
+
+def group_severities(entry):
+    """The CVSS score osv-scanner reports, keyed by every id the group is known
+    by (a finding may carry the GHSA id while the group names the CVE)."""
+    scores = {}
+    for group in entry.get("groups") or []:
+        for name in (group.get("ids") or []) + (group.get("aliases") or []):
+            scores[name] = group.get("max_severity") or scores.get(name, "")
+    return scores
+
+
+def fixed_versions(vulnerability):
+    """Every version the advisory says fixes it, in the order the ranges give."""
+    out = []
+    for affected in vulnerability.get("affected") or []:
+        for ranges in affected.get("ranges") or []:
+            for event in ranges.get("events") or []:
+                fixed = event.get("fixed")
+                if fixed and fixed not in out:
+                    out.append(fixed)
+    return out
+
+
+def go_findings(cwd, work):
+    """govulncheck reports only what the code can reach, which is the whole
+    point of it: a vulnerable module the program never calls is not a finding."""
+    text = output(["govulncheck", "-json", "./..."], cwd, ok=(0, 3))
+    return parse_govulncheck(text)
+
+
+def parse_govulncheck(text):
+    """govulncheck prints a stream of JSON documents, one message per concern
+    (config, the module list, every osv record, every finding), not JSON lines:
+    they are decoded one after another from the whole stream."""
+    summaries, found = {}, []
+    for message in json_messages(text, "govulncheck"):
+        if "osv" in message:
+            summaries[message["osv"].get("id", "")] = first_line(message["osv"].get("summary"))
+        finding = message.get("finding") or {}
+        if finding.get("trace"):
+            found.append(govulncheck_finding(finding, summaries))
+    return found
+
+
+def json_messages(text, tool):
+    decoder = json.JSONDecoder()
+    position = 0
+    while True:
+        while position < len(text) and text[position].isspace():
+            position += 1
+        if position >= len(text):
+            return
+        try:
+            message, position = decoder.raw_decode(text, position)
+        except json.JSONDecodeError as broken:
+            raise CouldNotScan(f"{tool} did not print JSON: {broken}") from broken
+        yield message
+
+
+def govulncheck_finding(finding, summaries):
+    trace = finding["trace"][0]
+    return Finding(advisory=finding.get("osv", ""),
+                   package=trace.get("module", ""),
+                   version=trace.get("version", ""),
+                   fixed=finding.get("fixed_version", ""),
+                   severity="",
+                   title=summaries.get(finding.get("osv", ""), ""))
+
+
+def rust_findings(cwd, work):
+    text = output(["cargo", "audit", "--json"], cwd, ok=(0, 1))
+    return parse_cargo_audit(load_json(text, "cargo audit"))
+
+
+def parse_cargo_audit(document):
+    found = []
+    for entry in (document.get("vulnerabilities") or {}).get("list") or []:
+        advisory = entry.get("advisory") or {}
+        package = entry.get("package") or {}
+        found.append(Finding(advisory=advisory.get("id", ""),
+                             package=package.get("name", ""),
+                             version=package.get("version", ""),
+                             fixed=", ".join((entry.get("versions") or {}).get("patched") or []),
+                             severity=str(advisory.get("severity") or ""),
+                             title=first_line(advisory.get("title"))))
+    return found
+
+
+def node_findings(cwd, work):
+    """--omit=dev: what the package ships. A vulnerable build tooling crate or
+    npm package is a different problem and is not this gate's."""
+    text = output(["npm", "audit", "--omit=dev", "--json"], cwd, ok=(0, 1))
+    return parse_npm_audit(load_json(text, "npm audit"))
+
+
+def parse_npm_audit(document):
+    if document.get("error"):
+        raise CouldNotScan(f"npm audit reported an error: {document['error']}")
+    found = []
+    for name, entry in (document.get("vulnerabilities") or {}).items():
+        found += [npm_advisory(name, entry, via) for via in entry.get("via") or []
+                  if isinstance(via, dict)]
+    return found
+
+
+def npm_advisory(name, entry, via):
+    return Finding(advisory=advisory_id(via),
+                   package=name,
+                   version=entry.get("range", ""),
+                   fixed=fix_available(entry.get("fixAvailable")),
+                   severity=via.get("severity", ""),
+                   title=first_line(via.get("title")))
+
+
+def advisory_id(via):
+    """The advisory npm names by URL when it has one (a GitHub advisory), and by
+    its own numeric id when it has not."""
+    found = re.search(r"GHSA-[0-9a-z-]+", str(via.get("url", "")), re.IGNORECASE)
+    return found.group(0) if found else f"npm:{via.get('source', '')}"
+
+
+def fix_available(available):
+    if isinstance(available, dict) and available.get("version"):
+        return f"{available.get('name', '')} {available['version']}".strip()
+    return ""
+
+
+def php_findings(cwd, work):
+    """composer.lock is not committed in every repository, so the install's own
+    lock is what is read. --no-dev: require-dev is not shipped. A package with
+    no runtime dependency at all (php and its extensions are not packages) has
+    nothing to audit, and composer audit says so with an error rather than an
+    empty answer, so it is asked nothing."""
+    output(["composer", "install", "--no-dev", "--no-interaction", "--quiet"], cwd)
+    if not composer_packages(cwd / "composer.lock"):
+        return []
+    text = output(["composer", "audit", "--locked", "--no-dev", "--format=json"], cwd,
+                  ok=(0, 1))
+    return parse_composer(load_json(text, "composer audit"))
+
+
+def composer_packages(lock):
+    """The runtime packages of a composer.lock, which is what --no-dev installs."""
+    if not lock.exists():
+        raise CouldNotScan(f"composer install wrote no {lock}")
+    document = load_json(lock.read_text(errors="replace"), "composer.lock")
+    return document.get("packages") or []
+
+
+def parse_composer(document):
+    found = []
+    for package, advisories in (document.get("advisories") or {}).items():
+        found += [composer_advisory(package, advisory) for advisory in advisories or []]
+    return found
+
+
+def composer_advisory(package, advisory):
+    return Finding(advisory=advisory.get("advisoryId", ""),
+                   package=advisory.get("packageName", package),
+                   version=advisory.get("affectedVersions", ""),
+                   fixed="",
+                   severity="",
+                   title=first_line(advisory.get("title")))
+
+
+def python_findings(cwd, work):
+    """What `pip install .` would bring in. The project itself is resolved and
+    not built: some of ours build a native library that needs a toolchain this
+    gate has no business carrying, and what ships is the dependency set, not the
+    build."""
+    venv = work / "venv"
+    python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    output([sys.executable, "-m", "venv", str(venv)], cwd)
+    output([str(python), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], cwd)
+    pins = resolved_pins(cwd, work, python)
+    if not pins:
+        return []
+    output([str(python), "-m", "pip", "install", "--quiet", "pip-audit"], cwd)
+    text = output([str(python), "-m", "pip_audit", "--format", "json", "-r", str(pins)],
+                  cwd, ok=(0, 1))
+    return parse_pip_audit(load_json(text, "pip-audit"))
+
+
+def resolved_pins(cwd, work, python):
+    """The dependency set a `pip install .` resolves to, as pinned requirements
+    (the project itself is a local path and is left out), or None when there is
+    no dependency at all."""
+    report = work / "pip-report.json"
+    output([str(python), "-m", "pip", "install", "--dry-run", "--quiet",
+            "--ignore-installed", "--report", str(report), "."], cwd)
+    document = load_json(report.read_text(errors="replace"), "pip install --report")
+    pins = sorted(f"{item['metadata']['name']}=={item['metadata']['version']}"
+                  for item in document.get("install") or []
+                  if not str((item.get("download_info") or {}).get("url", "")).startswith("file:"))
+    if not pins:
+        return None
+    path = work / "requirements-advisories.txt"
+    path.write_text("\n".join(pins) + "\n")
+    return path
+
+
+def parse_pip_audit(document):
+    found = []
+    for dependency in document.get("dependencies") or []:
+        found += [pip_advisory(dependency, vuln) for vuln in dependency.get("vulns") or []]
+    return found
+
+
+def pip_advisory(dependency, vuln):
+    return Finding(advisory=vuln.get("id", ""),
+                   package=dependency.get("name", ""),
+                   version=dependency.get("version", ""),
+                   fixed=", ".join(vuln.get("fix_versions") or []),
+                   severity="",
+                   title=first_line(vuln.get("description")))
+
+
+def csharp_findings(cwd, work):
+    target = dotnet_target(cwd)
+    output(["dotnet", "restore", target], cwd)
+    text = output(["dotnet", "list", target, "package", "--vulnerable",
+                "--include-transitive", "--format", "json"], cwd)
+    return parse_dotnet(load_json(text, "dotnet list package"))
+
+
+def dotnet_target(cwd):
+    """The solution when the repository has one, else the projects, so a
+    solution's every project is read rather than the first one found."""
+    for pattern in ("*.slnx", "*.sln"):
+        solutions = sorted(cwd.glob(pattern))
+        if solutions:
+            return solutions[0].name
+    projects = sorted(cwd.glob("*.csproj"))
+    if not projects:
+        raise CouldNotScan(f"no solution or project in {cwd}")
+    return projects[0].name
+
+
+def parse_dotnet(document):
+    found = []
+    for project in document.get("projects") or []:
+        for framework in project.get("frameworks") or []:
+            found += dotnet_framework(project, framework)
+    return found
+
+
+def dotnet_framework(project, framework):
+    found = []
+    for section in ("topLevelPackages", "transitivePackages"):
+        for package in framework.get(section) or []:
+            found += [dotnet_advisory(project, framework, package, vuln)
+                      for vuln in package.get("vulnerabilities") or []]
+    return found
+
+
+def dotnet_advisory(project, framework, package, vuln):
+    return Finding(advisory=advisory_id({"url": vuln.get("advisoryurl", "")}),
+                   package=package.get("id", ""),
+                   version=package.get("resolvedVersion", ""),
+                   fixed="",
+                   severity=vuln.get("severity", ""),
+                   title=f"{project.get('path', '')} ({framework.get('framework', '')})")
+
+
+SCANNERS = {
+    "erlang": erlang_findings,
+    "elixir": elixir_findings,
+    "go": go_findings,
+    "rust": rust_findings,
+    "node": node_findings,
+    "php": php_findings,
+    "python": python_findings,
+    "csharp": csharp_findings,
+}
+
+
+def first_line(text):
+    for line in (text or "").strip().splitlines():
+        if line.strip():
+            return line.strip()[:200]
+    return ""
+
+
+# --------------------------------------------------------------------------
+# Waivers.
+
+
+WAIVER_FIELDS = 5
+
+
+def parse_waivers(path, today):
+    """Every waiver, by (advisory, package). A malformed or expired row is a
+    failure to read, so a waiver is a decision somebody wrote down, dated and
+    owns, never a line of noise."""
+    if not path.exists():
+        return {}
+    waivers, problems = {}, []
+    for number, raw in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        waiver, problem = parse_waiver(line, today)
+        if problem:
+            problems.append(f"{path.name}:{number}: {problem}")
+        else:
+            waivers[(waiver.advisory, waiver.package)] = waiver
+    if problems:
+        raise CouldNotScan("; ".join(problems))
+    return waivers
+
+
+def parse_waiver(line, today):
+    fields = [field.strip() for field in line.split("|")]
+    if len(fields) != WAIVER_FIELDS:
+        return None, (f"expected {WAIVER_FIELDS} fields "
+                      "'advisory | package | why | owner | expires', got " + f"{len(fields)}")
+    advisory = fields[0]
+    package = fields[1]
+    why = fields[2]
+    owner = fields[3]
+    if not advisory or not package:
+        return None, "an advisory and a package are required"
+    if not why or not owner:
+        return None, f"{advisory} {package}: the why and the owner are required"
+    try:
+        expires = datetime.date.fromisoformat(fields[4])
+    except ValueError:
+        return None, f"{advisory} {package}: '{fields[4]}' is not a YYYY-MM-DD date"
+    if expires < today:
+        return None, (f"{advisory} {package}: the waiver expired on {expires}, "
+                      "fix it or open a dated one that covers today")
+    return Waiver(advisory, package, why, owner, expires), None
+
+
+def split_by_waiver(findings, waivers):
+    waived, left = [], []
+    for finding in findings:
+        waiver = waivers.get((finding.advisory, finding.package))
+        (waived if waiver else left).append((finding, waiver))
+    return waived, left
+
+
+# --------------------------------------------------------------------------
+# Reporting.
+
+
+def report(ecosystem, where, scanner, findings, waivers):
+    waived, left = split_by_waiver(findings, waivers)
+    print(f"dependency advisories: {ecosystem} in {where}, by {scanner}")
+    print(f"{len(findings)} advisory finding(s), {len(waived)} waived, {len(left)} left")
+    for finding, waiver in waived:
+        print(f"  waived until {waiver.expires} ({waiver.owner}): {row(finding)}")
+    for finding, _ in sorted(left, key=lambda pair: (pair[0].package, pair[0].advisory)):
+        print(f"  ::error::{row(finding)}")
+    return left, waived
+
+
+def row(finding):
+    parts = [finding.advisory, finding.package]
+    if finding.version:
+        parts[1] += f" {finding.version}"
+    if finding.fixed:
+        parts.append(f"fixed in {finding.fixed}")
+    if finding.severity:
+        parts.append(f"severity {finding.severity}")
+    if finding.title:
+        parts.append(finding.title)
+    return " | ".join(parts)
+
+
+# --------------------------------------------------------------------------
+# Entry point.
+
+
+def run_scan(ecosystem, cwd, work):
+    """One row per advisory and package: govulncheck reports a finding once per
+    call trace, which is more than a reader needs."""
+    found = SCANNERS[ecosystem](cwd, work)
+    return list(dict.fromkeys(found))
+
+
+def find_waivers(given, cwd):
+    path = Path(given)
+    return path if path.is_absolute() else cwd / path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--ecosystem", required=True, choices=ECOSYSTEMS)
+    parser.add_argument("--working-directory", default=".")
+    parser.add_argument("--waivers", default=os.environ.get(
+        "ADVISORIES_WAIVERS", ".github/advisories-waivers.txt"))
+    parser.add_argument("--work", default=os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
+                        + "/dependency-advisories")
+    parser.add_argument("--today", default=datetime.date.today().isoformat())
+    args = parser.parse_args()
+    return scan_and_report(args)
+
+
+def scan_and_report(args):
+    cwd = Path(args.working_directory).resolve()
+    work = Path(args.work).resolve()
+    if not cwd.is_dir():
+        print(f"dependency_advisories could not run: {cwd} is not a directory",
+              file=sys.stderr)
+        return 2
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        waivers = parse_waivers(find_waivers(args.waivers, cwd), parse_today(args.today))
+        findings = run_scan(args.ecosystem, cwd, work)
+    except (CouldNotScan, OSError) as problem:
+        print(f"dependency_advisories could not run: {problem}", file=sys.stderr)
+        return 2
+    left, _ = report(args.ecosystem, args.working_directory, SCANNER[args.ecosystem],
+                     findings, waivers)
+    return 1 if left else 0
+
+
+def parse_today(given):
+    try:
+        return datetime.date.fromisoformat(given)
+    except ValueError as broken:
+        raise CouldNotScan(f"--today '{given}' is not a YYYY-MM-DD date") from broken
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -71,6 +71,15 @@ on:
       - 'scripts/embed_c4_model.sh'
       - 'scripts/test_c4_model.sh'
       - 'scripts/fixtures/c4_model/**'
+      # The dependency-advisories gate, its self-test, the scripts it embeds and
+      # the wheels it pins touch no Containerfile either (the fixtures are under
+      # scripts/fixtures/ above).
+      - '.github/workflows/dependency-advisories.yml'
+      - '.github/workflows/dependency-advisories-selftest.yml'
+      - 'scripts/dependency_advisories.py'
+      - 'scripts/embed_dependency_advisories.sh'
+      - 'scripts/test_dependency_advisories.py'
+      - 'scripts/pip-audit-requirements.txt'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the

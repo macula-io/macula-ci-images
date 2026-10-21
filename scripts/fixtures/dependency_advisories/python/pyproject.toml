@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# A package with one dependency that carries no advisory. It proves the whole
+# call a consumer gets: the toolchain, the resolution, the scan and the report.
+# The fixtures beside this test cover what a finding and a waiver do.
+[project]
+name = "advisories-fixture"
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = ["six==1.17.0"]
+
+[tool.setuptools]
+py-modules = []

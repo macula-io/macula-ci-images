@@ -1,0 +1,114 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "mix.lock",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "phoenix",
+            "version": "1.4.0",
+            "ecosystem": "Hex",
+            "purl": "pkg:hex/phoenix@1.4.0"
+          },
+          "groups": [
+            {
+              "ids": [
+                "EEF-CVE-2026-56811",
+                "GHSA-6983-jfq8-485w"
+              ],
+              "aliases": [
+                "CVE-2026-56811",
+                "EEF-CVE-2026-56811",
+                "GHSA-6983-jfq8-485w"
+              ],
+              "max_severity": "8.7"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "EEF-CVE-2026-56811",
+              "summary": "Phoenix transports do not limit channel joins per connection, enabling process exhaustion.",
+              "affected": [
+                {
+                  "package": {
+                    "ecosystem": "Hex",
+                    "name": "phoenix"
+                  },
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0.11.0"
+                        },
+                        {
+                          "fixed": "1.5.15"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "1.6.0-rc.0"
+                        },
+                        {
+                          "fixed": "1.6.17"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "package": {
+            "name": "plug",
+            "version": "1.10.0",
+            "ecosystem": "Hex",
+            "purl": "pkg:hex/plug@1.10.0"
+          },
+          "groups": [
+            {
+              "ids": [
+                "GHSA-w7p3-7y2c-8nq3"
+              ],
+              "aliases": [
+                "GHSA-w7p3-7y2c-8nq3"
+              ],
+              "max_severity": "5.3"
+            }
+          ],
+          "vulnerabilities": [
+            {
+              "id": "GHSA-w7p3-7y2c-8nq3",
+              "summary": "Plug does not escape a cookie attribute, so a crafted value breaks out of it",
+              "affected": [
+                {
+                  "ranges": [
+                    {
+                      "type": "SEMVER",
+                      "events": [
+                        {
+                          "introduced": "0"
+                        },
+                        {
+                          "fixed": "1.16.6"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

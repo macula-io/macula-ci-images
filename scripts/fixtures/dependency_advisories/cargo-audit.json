@@ -1,0 +1,49 @@
+{
+  "database": {
+    "advisory-count": 1348,
+    "last-committed": "2026-10-21T03:12:44Z"
+  },
+  "lockfile": {
+    "dependency-count": 298
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 1,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0142",
+          "package": "h2",
+          "title": "h2 accepts a CONTINUATION frame after the stream was reset",
+          "severity": "high"
+        },
+        "package": {
+          "name": "h2",
+          "version": "0.4.4"
+        },
+        "versions": {
+          "patched": [
+            "0.4.12"
+          ],
+          "unaffected": []
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {
+        "kind": "unmaintained",
+        "advisory": {
+          "id": "RUSTSEC-2026-0374",
+          "package": "basic-toml",
+          "title": "`basic-toml` is unmaintained"
+        },
+        "package": {
+          "name": "basic-toml",
+          "version": "0.1.10"
+        }
+      }
+    ]
+  }
+}

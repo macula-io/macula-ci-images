@@ -1,0 +1,16 @@
+{
+  "advisories": {
+    "guzzlehttp/guzzle": [
+      {
+        "advisoryId": "PKSA-1y2z-3w4v-5u6t",
+        "packageName": "guzzlehttp/guzzle",
+        "affectedVersions": ">=7.0.0,<7.9.3",
+        "title": "Cookie header leakage to a redirect target in Guzzle",
+        "cve": "CVE-2026-39134",
+        "link": "https://github.com/advisories/GHSA-xxxx-yyyy-zzzz",
+        "reportedAt": "2026-09-30T12:00:00+00:00"
+      }
+    ]
+  },
+  "abandoned": []
+}
