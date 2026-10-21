@@ -333,6 +333,31 @@ guard, the check travels inside the workflow, written there from
 `scripts/doc_snippets_erlang.escript` by `scripts/embed_doc_snippets.sh`;
 `scripts/test_doc_snippets_erlang.sh` runs its cases against the embedded copy.
 
+## Checking a doc's Go blocks: `doc-snippets-go.yml`
+
+The same end for a Go module: every block fenced `go` or `golang` in its shipped docs
+builds against the module. A block with a package clause is a file and is built as it
+stands; any other block is a fragment, compiled as top-level functions plus a function
+body in a package that is not `main`, with its missing imports supplied by goimports.
+`go build -gcflags=-e` reports every error, at the doc's own line.
+
+What a fragment leaves to the reader is not an error: an identifier it uses and does
+not declare, a variable or import it does not use, a return with no function around it,
+a name bound twice by a block of alternatives, and `...` for elided code. Everything
+about the module is: a function, field, method or type it does not have, a wrong
+argument, the syntax, and a package of the module named with a member it does not have.
+A method on an identifier the block does not declare cannot be checked, since its type
+is not known.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-go.yml@<full sha>
+```
+
+`skip` is the one marker. The script is `scripts/doc_snippets_go.py`, embedded by
+`scripts/embed_doc_snippets.sh` and tested as embedded by `scripts/test_doc_snippets_go.sh`.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

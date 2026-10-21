@@ -1,0 +1,49 @@
+# Prove doc-snippets-go.yml before any repository calls it.
+#
+# `script` runs scripts/test_doc_snippets_go.sh against the check as embedded in the
+# workflow: every shape that must pass passes, and every kind of broken block fails at
+# the doc line that is wrong. `wired` calls the workflow itself on the fixture module,
+# which proves the call shape and the setup-go step a caller gets.
+
+name: doc snippets (go) self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/doc-snippets-go.yml'
+      - '.github/workflows/doc-snippets-go-selftest.yml'
+      - 'scripts/doc_snippets_go.py'
+      - 'scripts/embed_doc_snippets.sh'
+      - 'scripts/test_doc_snippets_go.sh'
+      - 'scripts/fixtures/doc_snippets/go/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-snippets-go-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: scripts/fixtures/doc_snippets/go/go.mod
+
+      - name: The YAML reader the test uses
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every pass and every failure, against the check as embedded
+        run: ./scripts/test_doc_snippets_go.sh
+
+  wired:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/doc-snippets-go.yml
+    with:
+      working-directory: scripts/fixtures/doc_snippets/go
