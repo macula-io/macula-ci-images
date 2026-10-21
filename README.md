@@ -460,6 +460,41 @@ means what it says.
 `skip` is the one marker. The script is `scripts/doc_snippets_php.py`, embedded by
 `scripts/embed_doc_snippets.sh` and tested as embedded by `scripts/test_doc_snippets_php.sh`.
 
+## A system's C4 model: `c4-model.yml`
+
+This exists so a reader of any repository that builds something people run can see
+what it talks to and what it is made of, and a commit that drops one of the two
+diagrams fails that repository's CI before it merges (macula-codebase-checks#10).
+Raf's rule, 2026-10-19: every repo that builds an executable artefact carries a C4
+Context and a C4 Component diagram as SVGs in `assets/`, linked from the README.
+Libraries and SDKs are exempt.
+
+Which repositories build an executable is not this workflow's business: the
+`c4_model` class in macula-codebase-checks decides it from the repository itself,
+files the work, and leaves this gate behind. The gate holds two things:
+
+| It asks for | How it is found |
+|---|---|
+| a context diagram | a file in `assets/` whose name holds `context` (the rest is free, case does not matter: `c4-context.svg`, `sys-context.svg`) |
+| a component diagram | the same, for `component` |
+| that each is shown | the file's own name appears in `README.md` or in `architecture/README.md`, which is where a service keeps its whole model. A diagram nobody links is not a model |
+
+```yaml
+  c4-model:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/c4-model.yml@<full sha>
+    # with:
+    #   working-directory: .            # the root, unless a fixture or a monorepo member
+    #   runs-on: '["ubuntu-latest"]'
+```
+
+Pin it by full commit. The drawn diagrams follow one rule of their own: self-contained
+SVGs, literal colours in plain classes plus a `prefers-color-scheme` dark block, never
+CSS custom properties, which `rsvg-convert` renders black. The script is
+`scripts/c4_model.sh`, embedded by `scripts/embed_c4_model.sh` and tested as embedded
+by `scripts/test_c4_model.sh`; `release-guard-selftest.yml`'s sibling
+`c4-model-selftest.yml` also calls the workflow once, on a fixture repository.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

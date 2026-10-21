@@ -1,0 +1,46 @@
+# Prove c4-model.yml before any repository calls it.
+#
+# `script` runs scripts/test_c4_model.sh against the check as embedded in the
+# workflow: the model a service carries passes, and every way of not carrying it
+# fails naming the diagram that is missing. `wired` calls the workflow itself on a
+# fixture repository, which proves the call shape and the checkout a caller gets.
+
+name: c4 model self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/c4-model.yml'
+      - '.github/workflows/c4-model-selftest.yml'
+      - 'scripts/c4_model.sh'
+      - 'scripts/embed_c4_model.sh'
+      - 'scripts/test_c4_model.sh'
+      - 'scripts/fixtures/c4_model/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: c4-model-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The YAML reader the test uses
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every pass and every failure, against the check as embedded
+        run: ./scripts/test_c4_model.sh
+
+  wired:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/c4-model.yml
+    with:
+      runs-on: '["ubuntu-latest"]'
+      working-directory: scripts/fixtures/c4_model/service

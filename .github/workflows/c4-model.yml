@@ -1,0 +1,122 @@
+# A C4 Context and a C4 Component diagram in every repository that builds an executable.
+#
+# This exists so a reader of any repository that builds something people run can see
+# what it talks to and what it is made of, from two diagrams, and a commit that drops
+# one fails the repository's CI before it merges (macula-codebase-checks#10).
+#
+# Raf's rule (2026-10-19): every repo that builds an executable artefact carries a C4
+# Context and a C4 Component diagram as SVGs in assets/, linked from the README.
+# Libraries and SDKs are exempt, and WHICH repositories build an executable is not
+# this workflow's business: macula-codebase-checks' c4_model class decides that from
+# the repository itself, files the work, and leaves this gate behind.
+#
+# CALL IT
+#
+#   c4-model:
+#     permissions: { contents: read }
+#     uses: macula-io/macula-ci-images/.github/workflows/c4-model.yml@<full sha>
+#     # with:                            # optional
+#     #   runs-on: '["self-hosted","msi00","pq"]'
+#
+# Pin it by FULL COMMIT SHA, as every shared call in the fleet is.
+#
+# WHAT IT CHECKS. A file in assets/ whose name holds `context`, and one whose name
+# holds `component` (case does not matter, and the rest of the name is free:
+# mcl-fovea has c4-context.svg and c4-components.svg). Each must be shown by a README
+# a reader reaches from the front page: the root README.md, or architecture/README.md,
+# which is where a service keeps its whole model. A diagram nobody links is not a
+# model.
+#
+# The SVG rule the drawn diagrams follow (macula-codebase-checks#10): self-contained,
+# literal colours in plain classes plus a prefers-color-scheme dark block, never CSS
+# custom properties, which rsvg-convert renders black.
+#
+# THE CHECK LIVES IN THIS FILE, not in the caller's tree, for the reason
+# release-guard.yml gives: a reusable workflow runs in the CALLER's repository. The
+# block below is written from scripts/c4_model.sh by scripts/embed_c4_model.sh, and
+# scripts/test_c4_model.sh runs its cases against the block as embedded, so what is
+# tested is what a caller runs.
+
+name: c4 model
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runs-on value; default ["ubuntu-latest"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      working-directory:
+        description: 'The repository root holding assets/ and the READMEs; default the root'
+        required: false
+        type: string
+        default: '.'
+
+permissions:
+  contents: read
+
+jobs:
+  c4-model:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write the check
+        run: |
+          mkdir -p "$RUNNER_TEMP/c4_model"
+          cat > "$RUNNER_TEMP/c4_model/c4_model.sh" <<'C4_MODEL_SCRIPT'
+          #!/usr/bin/env bash
+          # A C4 Context and a C4 Component diagram, in assets/, shown by a README.
+          #
+          # Usage: c4_model.sh [ROOT]
+          #
+          # ROOT is a repository that builds an executable, which this does not decide:
+          # macula-codebase-checks' c4_model class does, from the repository itself, and
+          # holds the whole rule (macula-codebase-checks#10). This is the gate that keeps
+          # the two files there once the class has drawn them, so the next commit cannot
+          # drop a diagram or stop showing it.
+          #
+          # A diagram is a file in assets/ whose name holds `context` or `component` (the
+          # names are not fixed: mcl-fovea has c4-context.svg and c4-components.svg). It
+          # is shown when a README a reader reaches from the front page links it by file
+          # name: the root README.md, or the architecture/README.md a service keeps its
+          # whole model in.
+          #
+          # Exit 0 when both are there and shown, 1 naming what is missing.
+          set -uo pipefail
+
+          ROOT="${1:-.}"
+          DOCS=(README.md architecture/README.md)
+          failed=0
+
+          shown() {
+            local name="$1" doc
+            for doc in "${DOCS[@]}"; do
+              [ -f "$ROOT/$doc" ] || continue
+              grep -qF "$name" "$ROOT/$doc" && return 0
+            done
+            return 1
+          }
+
+          for kind in context component; do
+            svg="$(find "$ROOT/assets" -maxdepth 1 -iname "*${kind}*.svg" -print -quit 2>/dev/null)"
+            if [ -z "$svg" ]; then
+              echo "c4_model: no assets/*${kind}*.svg: this repository builds an executable," \
+                   "and its C4 ${kind} diagram is what shows what it talks to and what it is made of" >&2
+              failed=1
+              continue
+            fi
+            name="$(basename "$svg")"
+            if ! shown "$name"; then
+              echo "c4_model: ${svg#"$ROOT"/} is not shown by ${DOCS[*]}: a diagram nobody links is not a model" >&2
+              failed=1
+            fi
+          done
+
+          exit "$failed"
+          C4_MODEL_SCRIPT
+
+      - name: A C4 Context and a C4 Component diagram, in assets/, shown by a README
+        working-directory: ${{ inputs.working-directory }}
+        run: bash "$RUNNER_TEMP/c4_model/c4_model.sh" .

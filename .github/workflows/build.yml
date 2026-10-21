@@ -63,6 +63,14 @@ on:
       - '.github/workflows/doc-snippets-php-selftest.yml'
       - 'scripts/doc_snippets_php.py'
       - 'scripts/test_doc_snippets_php.sh'
+      # The C4 model check, its self-test, the script that embeds it and its fixture
+      # build no base image either.
+      - '.github/workflows/c4-model.yml'
+      - '.github/workflows/c4-model-selftest.yml'
+      - 'scripts/c4_model.sh'
+      - 'scripts/embed_c4_model.sh'
+      - 'scripts/test_c4_model.sh'
+      - 'scripts/fixtures/c4_model/**'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the
