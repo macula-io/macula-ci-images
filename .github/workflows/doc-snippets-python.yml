@@ -108,7 +108,10 @@ jobs:
           Everything about the package is: an attribute, method, argument or import it
           does not have, a wrong type where its hints say otherwise, the syntax, and a
           package of its own named and never imported. A method on a name the block does
-          not define cannot be checked: its type is not known. A block reads the
+          not define cannot be checked: its type is not known, and a misspelt
+          top-level package (from fixture_countr import new) reads as a third-party one
+          that is not installed. A function the block writes without annotations has its
+          body checked all the same. A block reads the
           imports the doc's earlier blocks made, as a reader's session would.
 
           Markers, an HTML comment on the line before the fence:
@@ -240,30 +243,45 @@ jobs:
                           if not any(t.strip() and not t.strip().startswith("#") for _, t in code):
                               continue
                           name = f"snippet_{len(files)}.py"
-                          # The carried imports, then the wrapper; the block's own lines
-                          # follow, one each.
-                          text = ("".join(f"{t}\n" for t in carried)
-                                  + "async def _snippet() -> None:\n"
-                                  + "".join(f"    {t}\n" if t.strip() else "\n" for _, t in code)
-                                  + "    pass\n")
+                          # The file, line by line, with the doc line each came from (None
+                          # for what the check adds): the carried imports, the block's own
+                          # top-level imports (an import * or a __future__ import is only
+                          # valid at module level), the wrapper, then the rest of the block,
+                          # one line each, a hoisted import left blank in its place.
+                          hoisted = {n for n, t in code if IMPORT.match(t) and not t[:1].isspace()
+                                     and not t.rstrip().endswith(("(", "\\"))}
+                          rows = [(None, t) for t in carried]
+                          rows += [(n, t) for n, t in code if n in hoisted]
+                          rows += [(None, "async def _snippet() -> None:")]
+                          rows += [(n, "" if n in hoisted or not t.strip() else f"    {t}") for n, t in code]
+                          rows += [(None, "    pass")]
+                          text = "".join(t + "\n" for _, t in rows)
+                          where = [n for n, _ in rows]
                           # A syntax error stops mypy for every file, so it is found here
                           # and the block is left out of the type check.
                           try:
                               compile(text, name, "exec")
                           except SyntaxError as error:
-                              at = (error.lineno or 1) - len(carried) - 2
-                              lines = [n for n, _ in code]
-                              failures.append((doc, lines[at] if 0 <= at < len(lines) else start,
-                                               f"syntax error: {error.msg}"))
+                              at = (error.lineno or 1) - 1
+                              failures.append((doc, where[at] if 0 <= at < len(where) and where[at]
+                                               else start, f"syntax error: {error.msg}"))
                               continue
                           (work / name).write_text(text)
-                          files[name] = (doc, [n for n, _ in code], len(carried) + 1)
+                          files[name] = (doc, where, dict(code))
                           carried += [t.strip() for _, t in code
                                       if IMPORT.match(t) and not t.rstrip().endswith(("(", "\\"))]
                   if files:
                       env = dict(os.environ, MYPYPATH=str(base))
+                      # A missing third-party module is not ours to judge; a missing module
+                      # of the package's own is. An unannotated function a reader writes
+                      # (a handler, a callback) has its body checked too.
+                      (work / "mypy.ini").write_text(
+                          "[mypy]\nignore_missing_imports = True\nfollow_imports = silent\n"
+                          "check_untyped_defs = True\n"
+                          + "".join(f"\n[mypy-{p}]\nignore_missing_imports = False\n"
+                                    f"\n[mypy-{p}.*]\nignore_missing_imports = False\n" for p in sorted(own)))
                       out = subprocess.run(
-                          [sys.executable, "-m", "mypy", "--ignore-missing-imports", "--follow-imports=silent",
+                          [sys.executable, "-m", "mypy", "--config-file", "mypy.ini",
                            "--no-error-summary", "--show-error-codes", "--no-color-output",
                            "--no-incremental", "--explicit-package-bases", *sorted(files)],
                           cwd=work, env=env, capture_output=True, text=True)
@@ -271,16 +289,21 @@ jobs:
                           error = ERROR.match(line.strip())
                           if not error or os.path.basename(error.group("file")) not in files:
                               continue
-                          doc, lines, header = files[os.path.basename(error.group("file"))]
-                          at = int(error.group("line")) - header - 1
-                          if at < 0:
+                          doc, where, texts = files[os.path.basename(error.group("file"))]
+                          at = int(error.group("line")) - 1
+                          doc_line = where[at] if 0 <= at < len(where) else None
+                          if doc_line is None:
                               continue  # a carried import: reported where its own block is
-                          doc_line = lines[at] if 0 <= at < len(lines) else lines[-1]
                           message = error.group("msg")
                           bare = BARE_UNDEFINED.match(message)
                           if bare and bare.group(1) in own:
                               failures.append((doc, doc_line, f"{message}: the package {bare.group(1)} "
                                                               f"is used and never imported"))
+                              continue
+                          if bare and bare.group(1) in sys.stdlib_module_names and re.search(
+                                  rf"(?<![\w.]){bare.group(1)}\.[A-Za-z_]", texts.get(doc_line, "")):
+                              failures.append((doc, doc_line, f"{message}: the standard module "
+                                                              f"{bare.group(1)} is used and never imported"))
                               continue
                           if bare or any(rule.search(message) for rule in FRAGMENT_ONLY):
                               continue

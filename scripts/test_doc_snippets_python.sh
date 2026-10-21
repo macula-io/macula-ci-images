@@ -126,6 +126,18 @@ with_block "the block after a broken one is still checked" 1 \
 with_block "a shell session calling what is not there" 1 \
   "README.md:$((CODE + 1)): Module has no attribute \"Nope\"" \
   '```pycon' '>>> import fixture_counter' '>>> fixture_counter.Nope' 'Traceback (most recent call last):' '```'
+with_block "an unannotated function of the reader's calling what is not there" 1 \
+  "README.md:$((CODE + 1)): Module has no attribute \"nope\"" \
+  '```python' 'def go(name):' '    return fixture_counter.nope(name)' '```'
+with_block "an unannotated method calling what is not there" 1 \
+  "README.md:$((CODE + 3)): \"Tally\" has no attribute \"bunp\"" \
+  '```python' 'from fixture_counter import new' 'class H:' '    def run(self):' '        new("a").bunp()' '```'
+with_block "a module of the package's own that is not there" 1 \
+  "README.md:$CODE: Cannot find implementation or library stub for module named \"fixture_counter.missing\"" \
+  '```python' 'import fixture_counter.missing' '```'
+with_block "a standard module used and never imported" 1 \
+  "README.md:$CODE: Name \"json\" is not defined: the standard module json is used and never imported" \
+  '```python' 'json.dumps({})' '```'
 with_block "a skip with no reason" 1 "skip gives no reason" \
   '<!-- doc_snippets: skip -->' '```python' 'nope()' '```'
 with_block "a marker that is not one" 1 "unknown marker 'ignore'" \
@@ -135,6 +147,10 @@ with_block "alternatives that bind a name twice pass" 0 "0 failure(s)" \
   '```python' 'from fixture_counter import new' 'from fixture_counter import new' '```'
 with_block "a return in a block with no function around it passes" 0 "0 failure(s)" \
   '```python' 'return tally.count' '```'
+with_block "a star import, valid only at module level, passes" 0 "0 failure(s)" \
+  '```python' 'from fixture_counter import *' 'print(new("x").count)' '```'
+with_block "a value named like a standard module is a free name" 0 "0 failure(s)" \
+  '```python' 'print(json, token)' '```'
 with_block "a block in another language is not read" 0 "0 failure(s)" \
   '```rust' 'counter::reset();' '```'
 
