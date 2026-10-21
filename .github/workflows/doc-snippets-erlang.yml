@@ -34,8 +34,9 @@
 #   forms         functions, records, types and specs without a module, compiled in
 #                 a module of their own
 #   a session     expressions, or a shell session (1> prompts; output lines are not
-#                 code): all of one doc's session blocks, in order, are one function
-#                 body, so a variable a block binds is bound in the next
+#                 code): each block is a function whose parameters are the variables
+#                 it uses and does not bind, so a fragment using a Client the prose
+#                 made is checked for its calls and syntax without setup lines
 #
 # and every remote call with a literal module and function reaches an exported
 # function on the code path, which the compiler alone does not check. Records a
@@ -47,8 +48,11 @@
 #
 #   <!-- doc_snippets: skip <reason> -->   a counter-example or a fragment; the
 #                                          reason is required
-#   <!-- doc_snippets: run -->              the doc's session is executed: an
-#                                          exception or a timeout fails the job
+#   <!-- doc_snippets: run -->              the doc's session blocks, in order, are
+#                                          one function body, compiled strictly (a
+#                                          variable must be bound by an earlier
+#                                          block) and executed: an exception or a
+#                                          timeout fails the job
 #
 # Every guide should carry one run-marked block, executed against the real thing
 # the way the repository's tests already reach it, so "compiles but never fires" is
@@ -136,9 +140,13 @@ jobs:
           %%   forms         functions, records, types, specs without a module: compiled
           %%                 inside a module of their own
           %%   a session     expressions, or a shell session (1> prompts, output lines
-          %%                 ignored): every session block of one doc, in order, is the
-          %%                 body of one function, so a variable bound in one block is
-          %%                 bound in the next, as it is in the shell the doc shows
+          %%                 ignored): each block is the body of a function whose
+          %%                 parameters are the variables it uses and does not bind, so
+          %%                 a fragment that uses a Client the prose has made is checked
+          %%                 for its calls and syntax as it stands. A doc with a run
+          %%                 marker is also compiled strictly, every session block in
+          %%                 order as one body, and executed: there a variable must be
+          %%                 bound by an earlier block
           %%
           %% Every remote call with a literal module and function must reach an exported
           %% function of a module on the code path, so an example that calls an API that
@@ -213,7 +221,7 @@ jobs:
 
           work_dir() ->
               Base = os:getenv("RUNNER_TEMP", filename:basedir(user_cache, "doc_snippets")),
-              Dir = filename:join(Base, "doc_snippets_" ++ integer_to_list(erlang:unique_integer([positive]))),
+              Dir = filename:join(Base, "doc_snippets_" ++ os:getpid()),
               ok = filelib:ensure_path(Dir),
               Dir.
 
@@ -307,15 +315,15 @@ jobs:
               Broken = [F || {error, F} <- Classified],
               Modules = [B || {module, B} <- Classified],
               Forms = [B || {forms, B} <- Classified],
-              Session = lists:append([Chunks || {session, Chunks} <- Classified]),
+              Sessions = [Chunks || {session, Chunks} <- Classified],
               Compiled = [compile_module(Doc, B, Headers, Work) || B <- Modules]
                   ++ [compile_forms(Doc, B, Headers, Work) || B <- Forms]
-                  ++ [compile_session(Doc, Session, Headers, Work) || Session =/= []],
+                  ++ [compile_blocks(Doc, Sessions, Headers, Work)],
               Failures = Marked ++ Broken ++ lists:append([E || {error, E} <- Compiled]),
               Loaded = [Loaded || {ok, Loaded} <- Compiled],
               Calls = lists:append([missing_calls(Doc, Fs) || {_, Fs} <- Loaded]),
               Ran = case Run andalso Failures =:= [] andalso Calls =:= [] of
-                        true -> run_session(Doc, Loaded, Opts);
+                        true -> run_session(Doc, lists:append(Sessions), Headers, Work, Opts);
                         false -> []
                     end,
               Failures ++ Calls ++ Ran.
@@ -459,22 +467,71 @@ jobs:
                       ["-module(", Name, ").\n-compile([export_all, nowarn_export_all]).\n",
                        includes(Tokens, Headers), file_attr(Doc, First), Text, "\n"]).
 
-          %% Every session block of the doc, in order, as the body of session/0. Each
-          %% token is written on its own doc line; the full stops become commas.
-          compile_session(Doc, Chunks, Headers, Work) ->
-              Kept = [Chunk || {Chunk, Exprs} <- Chunks, not shell_command(Exprs)],
-              Tokens = lists:append(Kept),
-              case Tokens of
+          %% Each session block as a function of its own, whose parameters are the
+          %% variables it uses and does not bind: a guide fragment that calls
+          %% macula:publish(Client, ...) is checked for the call, its arity and its
+          %% syntax without growing the lines that make a Client. The free variables are
+          %% the compiler's own answer: a first compile names them as unbound, and the
+          %% second takes them as parameters.
+          compile_blocks(Doc, Sessions, Headers, Work) ->
+              Bodies = [Tokens || Chunks <- Sessions, Tokens <- [kept_tokens(Chunks)], Tokens =/= []],
+              case Bodies of
                   [] -> {ok, {none, []}};
                   _ ->
-                      Name = "doc_session_" ++ integer_to_list(erlang:phash2(Doc)),
-                      Start = erl_scan:line(hd(Tokens)) - 1,
-                      Body = emit(Tokens, Start, []),
-                      compile(Doc, Work, Name,
-                              ["-module(", Name, ").\n-export([session/0]).\n",
-                               includes(Tokens, Headers), file_attr(Doc, Start),
-                               "session() ->", Body, "\nok.\n"])
+                      Name = "doc_blocks_" ++ integer_to_list(erlang:phash2(Doc)),
+                      Source = fun(Params) -> blocks_source(Name, Doc, Bodies, Params, Headers) end,
+                      case compile_raw(Work, Name, Source([[] || _ <- Bodies])) of
+                          {error, Errors} ->
+                              case free_variables(Bodies, Errors) of
+                                  none -> {error, failures(Doc, Errors)};
+                                  Params -> compile(Doc, Work, Name, Source(Params))
+                              end;
+                          Compiled -> loaded(Compiled)
+                      end
               end.
+
+          kept_tokens(Chunks) ->
+              lists:append([Chunk || {Chunk, Exprs} <- Chunks, not shell_command(Exprs)]).
+
+          blocks_source(Name, Doc, Bodies, Params, Headers) ->
+              ["-module(", Name, ").\n-compile([export_all, nowarn_export_all]).\n",
+               includes(lists:append(Bodies), Headers),
+               [begin
+                    Start = erl_scan:line(hd(Body)) - 1,
+                    [file_attr(Doc, Start), "block_", integer_to_list(Start), "(",
+                     lists:join(", ", [atom_to_list(V) || V <- Vars]), ") ->",
+                     emit(Body, Start, []), "\nok.\n"]
+                end || {Body, Vars} <- lists:zip(Bodies, Params)]].
+
+          %% The unbound variables of each block, or none when the compile failed for
+          %% another reason only.
+          free_variables(Bodies, Errors) ->
+              Unbound = [{loc_line(Loc), Var} || {Loc, erl_lint, Desc} <- Errors,
+                                                 Var <- unbound_var(Desc)],
+              case Unbound of
+                  [] -> none;
+                  _ ->
+                      [lists:usort([V || {L, V} <- Unbound, L >= first_line(Body), L =< last_line(Body)])
+                       || Body <- Bodies]
+              end.
+
+          unbound_var({unbound_var, Var}) -> [Var];
+          unbound_var({unbound_var, Var, _}) -> [Var];
+          unbound_var(_) -> [].
+
+          first_line(Tokens) -> erl_scan:line(hd(Tokens)).
+          last_line(Tokens) -> erl_scan:line(lists:last(Tokens)).
+
+          %% Every session block of the doc, in order, as the body of session/0, for a
+          %% doc that asks to be run. Here a variable must be bound by an earlier block:
+          %% an example that is executed has nothing to take as a parameter.
+          compile_session(Doc, Tokens, Headers, Work) ->
+              Name = "doc_session_" ++ integer_to_list(erlang:phash2(Doc)),
+              Start = erl_scan:line(hd(Tokens)) - 1,
+              compile(Doc, Work, Name,
+                      ["-module(", Name, ").\n-export([session/0]).\n",
+                       includes(Tokens, Headers), file_attr(Doc, Start),
+                       "session() ->", emit(Tokens, Start, []), "\nok.\n"]).
 
           shell_command([{call, _, {atom, _, F}, _}]) -> lists:member(F, ?SHELL_COMMANDS);
           shell_command(_) -> false.
@@ -511,21 +568,30 @@ jobs:
           defined_records([]) -> [].
 
           compile(Doc, Work, Name, Source) ->
+              case compile_raw(Work, Name, Source) of
+                  {error, Errors} -> {error, failures(Doc, Errors)};
+                  Compiled -> loaded(Compiled)
+              end.
+
+          %% {ok, Module, Bin, Forms, File}, or {error, [{Loc, Mod, Desc}]}.
+          compile_raw(Work, Name, Source) ->
               File = filename:join(Work, Name ++ ".erl"),
               ok = file:write_file(File, unicode:characters_to_binary(Source)),
-              Includes = [filename:dirname(File)],
-              case epp:parse_file(File, [{includes, Includes}]) of
-                  {error, Reason} -> {error, [{Doc, 0, io_lib:format("~p", [Reason])}]};
+              case epp:parse_file(File, [{includes, [filename:dirname(File)]}]) of
+                  {error, Reason} -> {error, [{0, epp, Reason}]};
                   {ok, Forms} ->
                       case compile:forms(Forms, [binary, return_errors, return_warnings]) of
-                          {ok, Module, Bin, _Warnings} ->
-                              load(Module, File, Bin),
-                              {ok, {Module, Forms}};
-                          {error, Errors, _Warnings} ->
-                              {error, [{Doc, loc_line(Loc), format(Mod, Desc)}
-                                       || {_, Es} <- Errors, {Loc, Mod, Desc} <- Es]}
+                          {ok, Module, Bin, _Warnings} -> {ok, Module, Bin, Forms, File};
+                          {error, Errors, _Warnings} -> {error, [E || {_, Es} <- Errors, E <- Es]}
                       end
               end.
+
+          loaded({ok, Module, Bin, Forms, File}) ->
+              load(Module, File, Bin),
+              {ok, {Module, Forms}}.
+
+          failures(Doc, Errors) ->
+              [{Doc, loc_line(Loc), format(Mod, Desc)} || {Loc, Mod, Desc} <- Errors].
 
           %% A doc that shows its own version of a module the repo already has is compiled
           %% but not loaded: loading it would replace the real one, and every later call
@@ -568,28 +634,34 @@ jobs:
           %% --------------------------------------------------------------------------
           %% Running a session, where the doc says to.
 
-          run_session(Doc, Loaded, #{timeout := Seconds}) ->
-              case [M || {M, _} <- Loaded, M =/= none,
-                         lists:prefix("doc_session_", atom_to_list(M))] of
+          run_session(Doc, Chunks, Headers, Work, #{timeout := Seconds}) ->
+              case kept_tokens(Chunks) of
                   [] -> [{Doc, 1, "a run marker, and no session to run"}];
-                  [Session] ->
-                      {Pid, Ref} = spawn_monitor(fun() ->
-                                                         exit({result, try Session:session() of
-                                                                           _ -> ok
-                                                                       catch C:R:S -> {C, R, S}
-                                                                       end})
-                                                 end),
-                      receive
-                          {'DOWN', Ref, process, Pid, {result, ok}} -> [];
-                          {'DOWN', Ref, process, Pid, {result, {C, R, S}}} ->
-                              [{Doc, crash_line(Session, S),
-                                lists:flatten(io_lib:format("the session raised ~p:~0p", [C, R]))}];
-                          {'DOWN', Ref, process, Pid, Other} ->
-                              [{Doc, 1, lists:flatten(io_lib:format("the session died: ~0p", [Other]))}]
-                      after Seconds * 1000 ->
-                              exit(Pid, kill),
-                              [{Doc, 1, lists:flatten(io_lib:format("the session ran past ~p s", [Seconds]))}]
+                  Tokens ->
+                      case compile_session(Doc, Tokens, Headers, Work) of
+                          {error, Errors} ->
+                              [{D, L, "in the run session: " ++ M} || {D, L, M} <- Errors];
+                          {ok, {Session, _}} -> execute(Doc, Session, Seconds)
                       end
+              end.
+
+          execute(Doc, Session, Seconds) ->
+              {Pid, Ref} = spawn_monitor(fun() ->
+                                                 exit({result, try Session:session() of
+                                                                   _ -> ok
+                                                               catch C:R:S -> {C, R, S}
+                                                               end})
+                                         end),
+              receive
+                  {'DOWN', Ref, process, Pid, {result, ok}} -> [];
+                  {'DOWN', Ref, process, Pid, {result, {C, R, S}}} ->
+                      [{Doc, crash_line(Session, S),
+                        lists:flatten(io_lib:format("the session raised ~p:~0p", [C, R]))}];
+                  {'DOWN', Ref, process, Pid, Other} ->
+                      [{Doc, 1, lists:flatten(io_lib:format("the session died: ~0p", [Other]))}]
+              after Seconds * 1000 ->
+                      exit(Pid, kill),
+                      [{Doc, 1, lists:flatten(io_lib:format("the session ran past ~p s", [Seconds]))}]
               end.
 
           crash_line(Session, Stack) ->

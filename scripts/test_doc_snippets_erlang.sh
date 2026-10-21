@@ -126,9 +126,12 @@ with_block "a call to a module that is not on the code path" 1 \
 with_block "a fun reference to a missing function" 1 \
   "README.md:$CODE: fixture_counter:count/2 is not exported" \
   '```erlang' 'F = fun fixture_counter:count/2.' '```'
-with_block "a variable no earlier block binds" 1 \
-  "README.md:$CODE: variable 'Unbound' is unbound" \
-  '```erlang' 'Unbound + 1.' '```'
+with_block "a fragment's free variable is a parameter, its bad call still fails" 1 \
+  "README.md:$CODE: fixture_counter:bump/2 is not exported" \
+  '```erlang' 'fixture_counter:bump(Client, Unbound).' '```'
+with_block "a run session needs every variable bound" 1 \
+  "README.md:$((CODE + 1)): in the run session: variable 'Unbound' is unbound" \
+  '<!-- doc_snippets: run -->' '```erlang' 'Unbound + 1.' '```'
 with_block "a block that does not parse" 1 "README.md:$CODE: syntax error" \
   '```erlang' 'fixture_counter:bump(.' '```'
 with_block "a record the package does not define" 1 "README.md:$CODE: record nosuch undefined" \
@@ -162,6 +165,8 @@ with_block "a block in another language is not read" 0 "0 failure(s)" \
   '```elixir' 'FixtureCounter.reset(t2)' '```'
 with_block "an example without its final full stop" 0 "0 failure(s)" \
   '```erlang' 'fixture_counter:count(T2)' '```'
+with_block "a fragment using a variable the prose made passes" 0 "0 failure(s)" \
+  '```erlang' 'N = fixture_counter:count(Tally),' 'N + 1.' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \
