@@ -87,35 +87,40 @@ service() {
     > "$dir/architecture/README.md"
 }
 
+# A FRESH REPOSITORY PER CASE, from a function that sets DIR rather than
+# printing it: `new_case; dir="$DIR"` runs in a subshell, so its counter never
+# moves and every case rewrites the first one.
 n=0
-case_dir() {
+DIR=""
+new_case() {
   n=$((n + 1))
-  service "$WORK/case$n"
-  printf '%s' "$WORK/case$n"
+  DIR="$WORK/case$n"
+  service "$DIR"
 }
 
-run_case "the model a service carries passes" 0 "" bash "$CHECK" "$(case_dir)"
+new_case
+run_case "the model a service carries passes" 0 "" bash "$CHECK" "$DIR"
 
-dir="$(case_dir)"; rm "$dir/assets/c4-context.svg"
+new_case; dir="$DIR"; rm "$dir/assets/c4-context.svg"
 run_case "a missing context diagram fails" 1 "no assets/*context*.svg" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"; rm "$dir/assets/c4-components.svg"
+new_case; dir="$DIR"; rm "$dir/assets/c4-components.svg"
 run_case "a missing component diagram fails" 1 "no assets/*component*.svg" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"; printf '# service\n' > "$dir/README.md"
+new_case; dir="$DIR"; printf '# service\n' > "$dir/README.md"
 run_case "a diagram no README shows fails" 1 "c4-context.svg is not shown" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"; rm -r "$dir/architecture"
+new_case; dir="$DIR"; rm -r "$dir/architecture"
 run_case "the component diagram had only the architecture README" 1 \
   "c4-components.svg is not shown" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"
+new_case; dir="$DIR"
 printf '# service\n\n![c](assets/c4-context.svg)\n![c](assets/c4-components.svg)\n' \
   > "$dir/README.md"
 rm -r "$dir/architecture"
 run_case "the front page alone is enough" 0 "" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"
+new_case; dir="$DIR"
 mv "$dir/assets/c4-context.svg" "$dir/assets/sys-context.svg"
 mv "$dir/assets/c4-components.svg" "$dir/assets/inside-components.svg"
 printf '# service\n\n![a](assets/sys-context.svg)\n![b](assets/inside-components.svg)\n' \
@@ -123,19 +128,24 @@ printf '# service\n\n![a](assets/sys-context.svg)\n![b](assets/inside-components
 rm -r "$dir/architecture"
 run_case "the rest of the name is free, and case does not matter" 0 "" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"
+new_case; dir="$DIR"
 mv "$dir/assets/c4-context.svg" "$dir/assets/C4-CONTEXT.SVG"
 printf '# service\n\n![context](assets/C4-CONTEXT.SVG)\n' > "$dir/README.md"
 run_case "an upper-case name is the same diagram" 0 "" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"
+new_case; dir="$DIR"
 mv "$dir/assets/c4-context.svg" "$dir/assets/C4-CONTEXT.SVG"
 run_case "a link that is not the file's own name does not show it" 1 \
   "C4-CONTEXT.SVG is not shown" bash "$CHECK" "$dir"
 
-dir="$(case_dir)"; rm -rf "$dir/assets"
+new_case; dir="$DIR"; rm -rf "$dir/assets"
 run_case "a repository with no assets at all fails both" 1 "no assets/*context*.svg" \
   bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-context-dark.svg"
+run_case "every diagram must be shown, not the first one found" 1 \
+  "c4-context-dark.svg is not shown" bash "$CHECK" "$dir"
 
 mkdir -p "$WORK/empty"
 run_case "an empty directory is not a model" 1 "no assets/*component*.svg" \

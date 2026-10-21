@@ -32,18 +32,25 @@ shown() {
 }
 
 for kind in context component; do
-  svg="$(find "$ROOT/assets" -maxdepth 1 -iname "*${kind}*.svg" -print -quit 2>/dev/null)"
-  if [ -z "$svg" ]; then
+  svgs=()
+  while IFS= read -r svg; do
+    [ -n "$svg" ] && svgs+=("$svg")
+  done < <(find "$ROOT/assets" -maxdepth 1 -iname "*${kind}*.svg" 2>/dev/null | sort)
+  if [ "${#svgs[@]}" -eq 0 ]; then
     echo "c4_model: no assets/*${kind}*.svg: this repository builds an executable," \
          "and its C4 ${kind} diagram is what shows what it talks to and what it is made of" >&2
     failed=1
     continue
   fi
-  name="$(basename "$svg")"
-  if ! shown "$name"; then
-    echo "c4_model: ${svg#"$ROOT"/} is not shown by ${DOCS[*]}: a diagram nobody links is not a model" >&2
-    failed=1
-  fi
+  # EVERY one, not the first: a second diagram nobody links is a diagram a
+  # reader cannot reach, and the sweep's class asks for the same.
+  for svg in "${svgs[@]}"; do
+    name="$(basename "$svg")"
+    if ! shown "$name"; then
+      echo "c4_model: ${svg#"$ROOT"/} is not shown by ${DOCS[*]}: a diagram nobody links is not a model" >&2
+      failed=1
+    fi
+  done
 done
 
 exit "$failed"
