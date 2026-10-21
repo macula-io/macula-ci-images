@@ -458,24 +458,49 @@ jobs:
 
 
           def go_findings(cwd, work):
-              """govulncheck reports only what the code can reach, which is the whole
-              point of it: a vulnerable module the program never calls is not a finding."""
+              """govulncheck reports what the code can reach, at three levels: a call it
+              found (symbol), a package it imports, and a module it merely requires. Only
+              the first two are in the product; the third is a version that carries an
+              advisory nobody can reach, and it is named here without failing the build.
+              """
               text = output(["govulncheck", "-json", "./..."], cwd, ok=(0, 3))
-              return parse_govulncheck(text)
+              found, unreachable = parse_govulncheck(text)
+              if unreachable:
+                  print(f"govulncheck: {unreachable} advisory(ies) sit in required modules this "
+                        "code cannot call, so they are not findings", file=sys.stderr)
+              return found
 
 
           def parse_govulncheck(text):
               """govulncheck prints a stream of JSON documents, one message per concern
               (config, the module list, every osv record, every finding), not JSON lines:
-              they are decoded one after another from the whole stream."""
-              summaries, found = {}, []
+              they are decoded one after another from the whole stream.
+
+              Returns the findings and the number of advisories that are only in a
+              required module: a trace that names no package and no function is that.
+              """
+              summaries, found, unreachable = {}, [], 0
               for message in json_messages(text, "govulncheck"):
                   if "osv" in message:
                       summaries[message["osv"].get("id", "")] = first_line(message["osv"].get("summary"))
                   finding = message.get("finding") or {}
-                  if finding.get("trace"):
-                      found.append(govulncheck_finding(finding, summaries))
-              return found
+                  if not finding.get("trace"):
+                      continue
+                  reached = reached_entry(finding["trace"])
+                  if reached is None:
+                      unreachable += 1
+                  else:
+                      found.append(govulncheck_finding(finding, reached, summaries))
+              return found, unreachable
+
+
+          def reached_entry(trace):
+              """The first entry of a trace that names a package or a function: what
+              govulncheck reached, as opposed to the module the advisory arrived in."""
+              for entry in trace:
+                  if entry.get("package") or entry.get("function"):
+                      return entry
+              return None
 
 
           def json_messages(text, tool):
@@ -493,11 +518,10 @@ jobs:
                   yield message
 
 
-          def govulncheck_finding(finding, summaries):
-              trace = finding["trace"][0]
+          def govulncheck_finding(finding, reached, summaries):
               return Finding(advisory=finding.get("osv", ""),
-                             package=trace.get("module", ""),
-                             version=trace.get("version", ""),
+                             package=reached.get("package") or reached.get("module", ""),
+                             version=reached.get("version", ""),
                              fixed=finding.get("fixed_version", ""),
                              severity="",
                              title=summaries.get(finding.get("osv", ""), ""))

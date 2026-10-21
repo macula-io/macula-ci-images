@@ -20,13 +20,26 @@
   }
 }
 {
+  "osv": {
+    "id": "GO-2026-5932",
+    "summary": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design"
+  }
+}
+{
   "finding": {
     "osv": "GO-2026-6603",
     "fixed_version": "v1.27.2",
     "trace": [
       {
         "module": "stdlib",
-        "version": "v1.27.0"
+        "version": "v1.27.0",
+        "package": "net/http/internal/http2",
+        "function": "Close",
+        "receiver": "transportResponseBody",
+        "position": {
+          "filename": "src/net/http/internal/http2/transport.go",
+          "line": 1024
+        }
       }
     ]
   }
@@ -38,10 +51,20 @@
     "trace": [
       {
         "module": "stdlib",
-        "version": "v1.27.0"
+        "version": "v1.27.0",
+        "package": "net/http/internal/http2",
+        "function": "Write",
+        "receiver": "stickyErrWriter",
+        "position": {
+          "filename": "src/net/http/internal/http2/transport.go",
+          "line": 1187
+        }
       },
       {
-        "module": "internal/godebug"
+        "module": "stdlib",
+        "version": "v1.27.0",
+        "package": "sync",
+        "function": "OnceFunc"
       }
     ]
   }
@@ -53,13 +76,21 @@
     "trace": [
       {
         "module": "golang.org/x/net",
-        "version": "v0.58.0"
+        "version": "v0.58.0",
+        "package": "golang.org/x/net/http2",
+        "function": "Framer"
       }
     ]
   }
 }
 {
   "finding": {
-    "osv": "GO-2026-6618"
+    "osv": "GO-2026-5932",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.56.0"
+      }
+    ]
   }
 }

@@ -88,18 +88,25 @@ def case_osv_with_nothing_found(module):
 
 
 def case_govulncheck_reads_the_stream(module):
-    found = module.parse_govulncheck(fixture("govulncheck.json"))
+    found, unreachable = module.parse_govulncheck(fixture("govulncheck.json"))
     assert len(found) == 3, found
-    stdlib = [f for f in found if f.package == "stdlib"]
+    stdlib = [f for f in found if f.package == "net/http/internal/http2"]
     assert len(stdlib) == 2, stdlib
     assert stdlib[0].advisory == "GO-2026-6603" and stdlib[0].fixed == "v1.27.2", stdlib[0]
     assert stdlib[0].title.startswith("HTTP/2 server memory exhaustion"), stdlib[0].title
-    assert [f.package for f in found].count("golang.org/x/net") == 1, found
+    assert [f.package for f in found].count("golang.org/x/net/http2") == 1, found
+
+
+def case_a_module_the_code_cannot_reach_is_not_a_finding(module):
+    found, unreachable = module.parse_govulncheck(fixture("govulncheck.json"))
+    assert unreachable == 1, unreachable
+    assert not [f for f in found if "crypto" in f.package], found
 
 
 def case_a_finding_once_per_call_trace_is_one_row(module):
     text = fixture("govulncheck.json")
-    module.SCANNERS = dict(module.SCANNERS, go=lambda cwd, work: module.parse_govulncheck(text))
+    module.SCANNERS = dict(
+        module.SCANNERS, go=lambda cwd, work: module.parse_govulncheck(text)[0])
     found = module.run_scan("go", None, None)
     assert len(found) == 2, found
     assert {f.advisory for f in found} == {"GO-2026-6603", "GO-2026-6617"}, found
