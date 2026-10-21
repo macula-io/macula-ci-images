@@ -40,10 +40,12 @@ allow-list rather than a list of refusals: cargo audit's .cargo/audit.toml may
 carry [output], [yanked] and [advisories] informational_warnings and nothing
 else; composer audit's composer.json config.audit may carry abandoned,
 block-insecure and block-abandoned and nothing else; and a committed .npmrc may
-not point npm audit at another registry. Anything else is refused, naming the
-key (exit 2). Likewise a rebar.lock that pins a git or path dependency is
-refused: it ships, but no advisory database can look it up, so the scanned set
-would quietly be smaller than the shipped set.
+not point npm audit at another registry or set a key that prunes the install. A
+composer.json that switches packagist.org off is refused too: it leaves the audit
+no advisory source to ask. Anything else is refused, naming the key (exit 2).
+Likewise a rebar.lock or mix.lock that pins a git or path dependency is refused:
+it ships, but no advisory database can look it up, so the scanned set would
+quietly be smaller than the shipped set.
 
 Usage:
   dependency_advisories.py --ecosystem node [--working-directory .]
@@ -214,8 +216,33 @@ def elixir_findings(cwd, work):
     lock = cwd / "mix.lock"
     if not lock.exists():
         raise CouldNotScan(f"mix deps.get wrote no {lock}")
+    refuse_a_foreign_mix_dependency(lock)
     shutil.copyfile(lock, work / "mix.lock")
     return osv_findings(work)
+
+
+# A mix.lock entry whose source is not a released hex package:
+# "name": {:git, ...} or "name": {:path, ...}.
+MIX_LOCK_OTHER = re.compile(r'"([^"]+)"\s*:\s*\{:(git|path)\s*,')
+
+
+def mix_foreign_dependencies(lock):
+    """Every mix.lock entry that is not a hex package, as name and kind."""
+    return [f"{entry.group(1)} ({entry.group(2)})"
+            for line in lock.read_text(errors="replace").splitlines()
+            for entry in [MIX_LOCK_OTHER.search(line)] if entry]
+
+
+def refuse_a_foreign_mix_dependency(lock):
+    """osv-scanner looks up hex packages and no git revision, so a git or path
+    dependency ships unscanned. The same rule as rebar.lock, for the same
+    reason."""
+    foreign = mix_foreign_dependencies(lock)
+    if foreign:
+        raise CouldNotScan(
+            f"{lock} carries {', '.join(foreign)}, which is not a hex package: no "
+            "advisory database covers it, so the scanned set would be smaller than "
+            "the shipped set. Depend on a released version")
 
 
 def osv_findings(directory):
@@ -629,6 +656,15 @@ def is_table(value):
     return isinstance(value, dict)
 
 
+def packagist_disabled(document):
+    """composer.json {"repositories": [{"packagist.org": false}]} turns the one
+    source of advisories off, leaving composer audit nothing to ask."""
+    for repository in document.get("repositories") or []:
+        if is_table(repository) and repository.get("packagist.org") is False:
+            return True
+    return False
+
+
 def php_ignores(cwd):
     """composer audit honours composer.json "config": {"audit": {...}}: the keys
     Composer 2.6 and 2.8 add there can silence a package or a severity."""
@@ -636,6 +672,10 @@ def php_ignores(cwd):
     if not path.exists():
         return None
     document = load_json(path.read_text(errors="replace"), str(path))
+    if packagist_disabled(document):
+        return (f"{path} switches packagist.org off in \"repositories\", which leaves "
+                "composer audit with no advisory source to ask; the audit would answer "
+                "clean because nobody was asked")
     audit = (document.get("config") or {}).get("audit")
     if audit is None:
         return None
@@ -651,23 +691,60 @@ def php_ignores(cwd):
 
 
 def npm_registry(cwd):
-    """npm audit asks the registry a .npmrc names. A committed registry=http://...
-    decides which database answers, so a mirror that has never heard of an
-    advisory would read as a clean repository."""
+    """npm audit asks the registry a .npmrc names, and it audits the tree that
+    .npmrc's install flags leave: omit=dev, production=true, only=prod and
+    include= drop the dev tree this gate deliberately keeps in the scan. So a
+    .npmrc is read against a short allow-list of keys that decide nothing about
+    which packages exist or where they come from, and every other key is named
+    and refused. audit-level is on the list on purpose: it moves the exit code,
+    which is not read here, because the JSON is."""
     for directory in to_repository_root(cwd):
         path = directory / ".npmrc"
         if not path.exists():
             continue
         for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
-            key, _, value = line.partition("=")
-            if key.strip() != "registry":
+            line = line.split("#", 1)[0].strip()
+            if not line or "=" not in line:
                 continue
-            named = value.strip().rstrip("/") + "/"
-            if named != NPM_DEFAULT_REGISTRY:
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if key == "registry" and value.rstrip("/") + "/" != NPM_DEFAULT_REGISTRY:
                 return (f"{path}:{number} scans a registry other than "
-                        f"{NPM_DEFAULT_REGISTRY} ({named}), so an advisory it has not "
+                        f"{NPM_DEFAULT_REGISTRY} ({value}), so an advisory it has not "
                         "heard of would read as clean; remove the line or say why here")
+            if key not in NPMRC_KEYS:
+                return (f"{path}:{number} sets {key}, which is not on the allow-list of "
+                        "keys that cannot change what is audited or where it comes from; "
+                        "a committed .npmrc is refused rather than obeyed")
     return None
+
+
+# What a committed .npmrc may set. Deliberately short, and every entry is here
+# because it decides neither the dependency set nor the database that answers:
+# npm reads production, omit, only and include to prune the install, a scoped
+# @scope:registry to redirect a package's source, and audit-level only moves the
+# exit code, which this gate does not read (it parses the JSON).
+NPMRC_KEYS = {
+    "registry",             # only the default value, checked above
+    "audit-level",          # exit code only; the findings are parsed from JSON
+    "engine-strict",
+    "fund",
+    "save-exact",
+    "save-prefix",
+    "legacy-peer-deps",
+    "strict-ssl",
+    "loglevel",
+    "progress",
+    "update-notifier",
+    "color",
+    "fetch-retries",
+    "fetch-timeout",
+    "prefer-offline",
+    "prefer-online",
+    "offline",
+    "cache",
+    "user-agent",
+}
 
 
 def to_repository_root(cwd):

@@ -357,11 +357,61 @@ def case_node_refuses_another_registry(module):
     raise AssertionError("a rewritten registry was scanned as if it were npm's")
 
 
+def case_node_refuses_a_pruned_install(module):
+    """npm prunes the install from these keys, which would drop the dev tree
+    this gate keeps in the scan for node and php."""
+    for line in ("omit=dev", "production=true", "only=prod", "include=optional"):
+        directory = Path(tempfile.mkdtemp())
+        (directory / ".npmrc").write_text(line + "\n")
+        try:
+            module.refuse_an_undated_ignore("node", directory)
+        except module.CouldNotScan as problem:
+            assert line.split("=")[0] in str(problem), (line, problem)
+            continue
+        raise AssertionError(f"a .npmrc with {line} was accepted")
+
+
 def case_node_allows_the_default_registry(module):
     directory = Path(tempfile.mkdtemp())
     (directory / ".npmrc").write_text(
-        "registry=https://registry.npmjs.org/\nengine-strict=true\n")
+        "registry=https://registry.npmjs.org/\nengine-strict=true\n"
+        "audit-level=high\n")
     module.refuse_an_undated_ignore("node", directory)
+
+
+def case_elixir_refuses_a_git_dependency(module):
+    """osv-scanner looks up hex packages and no git revision, so a mix.lock
+    entry from git or a path ships unscanned."""
+    lock = FIXTURES / "mix-git-dep.lock"
+    assert module.mix_foreign_dependencies(lock) == ["our_fork (git)"], (
+        module.mix_foreign_dependencies(lock))
+    try:
+        module.refuse_a_foreign_mix_dependency(lock)
+    except module.CouldNotScan as problem:
+        assert "our_fork (git)" in str(problem), problem
+        return
+    raise AssertionError("a mix.lock with a git dependency was scanned as if it were hex")
+
+
+def case_a_mix_lock_of_hex_packages_is_not_refused(module):
+    lock = FIXTURES / "mix.lock"
+    assert module.mix_foreign_dependencies(lock) == [], module.mix_foreign_dependencies(lock)
+    module.refuse_a_foreign_mix_dependency(lock)
+
+
+def case_php_refuses_a_disabled_packagist(module):
+    """With packagist.org switched off, composer audit has no advisory source to
+    ask and answers clean because nobody was asked."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture",
+         "repositories": [{"packagist.org": False}]}))
+    try:
+        module.refuse_an_undated_ignore("php", directory)
+    except module.CouldNotScan as problem:
+        assert "packagist.org" in str(problem), problem
+        return
+    raise AssertionError("a composer.json with no advisory source was audited as if clean")
 
 
 def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
@@ -552,7 +602,11 @@ CASES = [
     case_php_refuses_an_ignored_severity,
     case_php_allows_a_composer_config_without_ignores,
     case_node_refuses_another_registry,
+    case_node_refuses_a_pruned_install,
     case_node_allows_the_default_registry,
+    case_elixir_refuses_a_git_dependency,
+    case_a_mix_lock_of_hex_packages_is_not_refused,
+    case_php_refuses_a_disabled_packagist,
     case_an_ecosystem_without_an_ignore_file_is_left_alone,
     case_python_reads_the_build_backends_requirements,
     case_python_with_no_pyproject_has_no_build_requirements,
