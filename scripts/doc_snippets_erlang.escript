@@ -62,7 +62,8 @@
 -define(PROMPT, "^\\s*\\d+>\\s?(.*)$").
 %% What the shell offers that a module does not: dropped from a session, since
 %% they configure the shell rather than say anything about the code.
--define(SHELL_COMMANDS, [b, c, e, f, h, help, i, l, m, q, rd, rf, rl, rp, rr, v]).
+-define(SHELL_COMMANDS, [b, bt, c, cd, e, f, flush, h, help, i, l, lc, ls, m, memory, ni, nl,
+                         pid, pwd, q, rd, regs, rf, rl, rp, rr, v]).
 
 main(Args) ->
     case options(Args, #{timeout => 120}) of
@@ -309,7 +310,7 @@ chunks(Tokens) -> chunks(Tokens, [], []).
 
 chunks([], [], Acc) -> lists:reverse(Acc);
 chunks([], Current, Acc) ->
-    Line = erl_scan:line(lists:last(Current)),
+    Line = erl_scan:line(hd(Current)),  %% Current is reversed: its head is the last token
     Dot = {dot, erl_anno:set_text(".", erl_anno:new(Line))},
     lists:reverse([lists:reverse([Dot | Current]) | Acc]);
 chunks([{dot, _} = Dot | Rest], Current, Acc) -> chunks(Rest, [], [lists:reverse([Dot | Current]) | Acc]);
@@ -353,7 +354,7 @@ compile_forms(Doc, #{first := First, text := Text}, Headers, Work) ->
                       includes(Tokens, Headers), file_attr(Doc, First), Text, "\n",
                       stubs(Stubs)]
              end,
-    fragment(Doc, Work, Name, Source, [], [], [], 3).
+    fragment(Doc, Work, Name, Source, [], [], [], 20).
 
 %% Each session block as a function of its own, whose parameters are the
 %% variables it uses and does not bind: a guide fragment that calls
@@ -370,7 +371,7 @@ compile_blocks(Doc, Sessions, Headers, Work) ->
             Source = fun(Params, Stubs) ->
                              [blocks_source(Name, Doc, Bodies, Params, Headers), stubs(Stubs)]
                      end,
-            fragment(Doc, Work, Name, Source, Bodies, [[] || _ <- Bodies], [], 3)
+            fragment(Doc, Work, Name, Source, Bodies, [[] || _ <- Bodies], [], 20)
     end.
 
 %% A fragment is compiled until what it leaves to the reader is supplied: the

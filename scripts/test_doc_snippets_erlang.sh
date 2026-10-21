@@ -182,6 +182,8 @@ with_block "a session fragment calling the reader's own helper passes" 0 "0 fail
   '```erlang' 'receive {tally, T} -> handle_tally(T) end.' '```'
 with_block "a spec listing passes once its types resolve" 0 "0 failure(s)" \
   '```erlang' '-spec bump(fixture_counter_tally()) -> ok.' '-type fixture_counter_tally() :: term().' '```'
+with_block "a shape with many free variables passes" 0 "0 failure(s)" \
+  '```erlang' '#{type => Type, version => Version, created_at => CreatedAtMs,' '  expires_at => ExpiresAtMs, payload => Payload, subject => Subject}' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \

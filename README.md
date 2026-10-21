@@ -295,7 +295,7 @@ backlogs and registers):
 | A block that is | is checked by |
 |---|---|
 | a module (`-module(...)`) | compiling it as it stands, and loading it unless the repository already has a module of that name |
-| forms without a module (functions, records, specs) | compiling them in a module of their own. A local function they call and do not define is the reader's own and gets a placeholder; a spec listing compiles once its types resolve |
+| forms without a module (functions, records, specs) | compiling them in a module of their own. A local function they call and do not define is the reader's own and gets a placeholder, so a misspelt local call is a placeholder too and nothing catches it in a forms block; a spec listing compiles once its types resolve |
 | expressions, or a shell session (`1>` prompts; output lines are not code) | compiling each block as a function whose parameters are the variables it uses and does not bind, so a fragment that uses a `Client` the prose made is checked for its calls and syntax as it stands. A misspelt variable is a parameter too, and a local function the block calls is the reader's own, with a placeholder: only a `run` block, compiled with neither, catches those |
 
 Every remote call with a literal module and function must then reach an exported
