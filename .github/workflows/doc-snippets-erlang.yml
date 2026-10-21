@@ -38,6 +38,10 @@
 #                 it uses and does not bind, so a fragment using a Client the prose
 #                 made is checked for its calls and syntax without setup lines
 #
+# A local function that a forms or session block calls and does not define is the
+# reader's own (handle_join(Node)) and gets a placeholder; a module block and a run
+# session get none.
+#
 # and every remote call with a literal module and function reaches an exported
 # function on the code path, which the compiler alone does not check. Records a
 # session or a forms block uses come from the header that defines them, the
@@ -49,7 +53,8 @@
 #   <!-- doc_snippets: skip <reason> -->   a counter-example or a fragment; the
 #                                          reason is required
 #   <!-- doc_snippets: run -->              the doc's session blocks up to and
-#                                          including this one, in order, are one
+#                                          including the last run-marked one, in
+#                                          order, are one
 #                                          function body, compiled strictly (a
 #                                          variable must be bound by an earlier
 #                                          block) and executed: an exception or a
@@ -139,7 +144,8 @@ jobs:
           %%
           %%   a module      it has a -module attribute: compiled as it stands, and loaded
           %%   forms         functions, records, types, specs without a module: compiled
-          %%                 inside a module of their own
+          %%                 inside a module of their own; a local function they call and
+          %%                 do not define is the reader's own, and gets a placeholder
           %%   a session     expressions, or a shell session (1> prompts, output lines
           %%                 ignored): each block is the body of a function whose
           %%                 parameters are the variables it uses and does not bind, so
@@ -161,7 +167,8 @@ jobs:
           %%
           %%   <!-- doc_snippets: skip <reason> -->   not checked; the reason is required
           %%   <!-- doc_snippets: run -->              the doc's session blocks up to and
-          %%                                           including this one are executed, and
+          %%                                           including the last run-marked one are
+          %%                                           executed, and
           %%                                           an exception or a timeout fails
           %%
           %% Exit 0 when every block passes, 1 when any fails (each failure printed as
@@ -468,9 +475,12 @@ jobs:
           compile_forms(Doc, #{first := First, text := Text}, Headers, Work) ->
               Name = "doc_snippet_" ++ integer_to_list(erlang:phash2({Doc, First})),
               {ok, Tokens, _} = erl_scan:string(Text),
-              compile(Doc, Work, Name,
-                      ["-module(", Name, ").\n-compile([export_all, nowarn_export_all]).\n",
-                       includes(Tokens, Headers), file_attr(Doc, First), Text, "\n"]).
+              Source = fun(_Params, Stubs) ->
+                               ["-module(", Name, ").\n-compile([export_all, nowarn_export_all]).\n",
+                                includes(Tokens, Headers), file_attr(Doc, First), Text, "\n",
+                                stubs(Stubs)]
+                       end,
+              fragment(Doc, Work, Name, Source, [], [], [], 3).
 
           %% Each session block as a function of its own, whose parameters are the
           %% variables it uses and does not bind: a guide fragment that calls
@@ -484,16 +494,42 @@ jobs:
                   [] -> {ok, {none, []}};
                   _ ->
                       Name = "doc_blocks_" ++ integer_to_list(erlang:phash2(Doc)),
-                      Source = fun(Params) -> blocks_source(Name, Doc, Bodies, Params, Headers) end,
-                      case compile_raw(Work, Name, Source([[] || _ <- Bodies])) of
-                          {error, Errors} ->
-                              case free_variables(Bodies, Errors) of
-                                  none -> {error, failures(Doc, Errors)};
-                                  Params -> compile(Doc, Work, Name, Source(Params))
-                              end;
-                          Compiled -> loaded(Compiled)
-                      end
+                      Source = fun(Params, Stubs) ->
+                                       [blocks_source(Name, Doc, Bodies, Params, Headers), stubs(Stubs)]
+                               end,
+                      fragment(Doc, Work, Name, Source, Bodies, [[] || _ <- Bodies], [], 3)
               end.
+
+          %% A fragment is compiled until what it leaves to the reader is supplied: the
+          %% free variables of each session block become its parameters, and a local
+          %% function the fragment calls without defining (handle_join(Node), the
+          %% reader's own) becomes a placeholder that raises if it is ever run. What is
+          %% ours is still checked: every remote call, arity and the syntax. A module
+          %% block and a run session get neither, since they claim to be complete.
+          fragment(Doc, Work, Name, Source, Bodies, Params, Stubs, Passes) ->
+              case compile_raw(Work, Name, Source(Params, Stubs)) of
+                  {error, Errors} when Passes > 1 ->
+                      More = [lists:usort(P ++ F) || {P, F} <- lists:zip(Params, free_variables(Bodies, Errors))],
+                      Fns = lists:usort(Stubs ++ undefined_functions(Errors)),
+                      case {More, Fns} of
+                          {Params, Stubs} -> {error, failures(Doc, Errors)};
+                          _ -> fragment(Doc, Work, Name, Source, Bodies, More, Fns, Passes - 1)
+                      end;
+                  {error, Errors} -> {error, failures(Doc, Errors)};
+                  Compiled -> loaded(Compiled)
+              end.
+
+          undefined_functions(Errors) ->
+              [FA || {_, erl_lint, Desc} <- Errors, FA <- undefined_function(Desc)].
+
+          undefined_function({undefined_function, {F, A}}) -> [{F, A}];
+          undefined_function({undefined_function, {F, A}, _}) -> [{F, A}];
+          undefined_function({spec_fun_undefined, {F, A}}) -> [{F, A}];
+          undefined_function(_) -> [].
+
+          stubs(Stubs) ->
+              [io_lib:format("~p(~s) -> erlang:error(doc_snippets_placeholder).\n",
+                             [F, lists:join(", ", lists:duplicate(A, "_"))]) || {F, A} <- Stubs].
 
           kept_tokens(Chunks) ->
               lists:append([Chunk || {Chunk, Exprs} <- Chunks, not shell_command(Exprs)]).
@@ -508,17 +544,12 @@ jobs:
                      emit(Body, Start, []), "\nok.\n"]
                 end || {Body, Vars} <- lists:zip(Bodies, Params)]].
 
-          %% The unbound variables of each block, or none when the compile failed for
-          %% another reason only.
+          %% The unbound variables of each block.
           free_variables(Bodies, Errors) ->
               Unbound = [{loc_line(Loc), Var} || {Loc, erl_lint, Desc} <- Errors,
                                                  Var <- unbound_var(Desc)],
-              case Unbound of
-                  [] -> none;
-                  _ ->
-                      [lists:usort([V || {L, V} <- Unbound, L >= first_line(Body), L =< last_line(Body)])
-                       || Body <- Bodies]
-              end.
+              [lists:usort([V || {L, V} <- Unbound, L >= first_line(Body), L =< last_line(Body)])
+               || Body <- Bodies].
 
           unbound_var({unbound_var, Var}) -> [Var];
           unbound_var({unbound_var, Var, _}) -> [Var];

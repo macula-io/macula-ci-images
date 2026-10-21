@@ -141,9 +141,15 @@ with_block "forms and expressions in one block" 1 "README.md:$CODE: mixes forms 
 with_block "a module whose function calls what is not there" 1 \
   "README.md:$((CODE + 2)): calls gone_module:go/0" \
   '```erlang' '-module(doc_case_module).' '-export([f/0]).' 'f() -> gone_module:go().' '```'
-with_block "forms without a module that do not compile" 1 \
-  "README.md:$CODE: function helper/0 undefined" \
-  '```erlang' 'f() -> helper().' '```'
+with_block "forms without a module that use an unbound variable" 1 \
+  "README.md:$CODE: variable 'X' is unbound" \
+  '```erlang' 'f() -> X.' '```'
+with_block "a module block that calls a function it does not define" 1 \
+  "README.md:$((CODE + 2)): function helper/0 undefined" \
+  '```erlang' '-module(doc_case_strict).' '-export([f/0]).' 'f() -> helper().' '```'
+with_block "a reader's helper in a fragment does not hide a bad call beside it" 1 \
+  "README.md:$((CODE + 1)): fixture_counter:reset/1 is not exported" \
+  '```erlang' 'on_tally(T) -> notify(T),' '    fixture_counter:reset(T).' '```'
 with_block "a shell session calling what is not there" 1 \
   "README.md:$CODE: fixture_counter:reset/1 is not exported" \
   '```erlang' '1> fixture_counter:reset(T2).' '** exception error: undefined function' '```'
@@ -170,6 +176,12 @@ with_block "a fragment using a variable the prose made passes" 0 "0 failure(s)" 
 with_block "a run executes the blocks up to it, not the ones after" 0 "0 failure(s)" \
   '<!-- doc_snippets: run -->' '```erlang' '2 = fixture_counter:count(T2).' '```' \
   '```erlang' 'fixture_counter:count(NotBoundHere).' '```'
+with_block "forms calling the reader's own helper pass" 0 "0 failure(s)" \
+  '```erlang' 'on_tally(T) -> notify(fixture_counter:count(T)).' '```'
+with_block "a session fragment calling the reader's own helper passes" 0 "0 failure(s)" \
+  '```erlang' 'receive {tally, T} -> handle_tally(T) end.' '```'
+with_block "a spec listing passes once its types resolve" 0 "0 failure(s)" \
+  '```erlang' '-spec bump(fixture_counter_tally()) -> ok.' '-type fixture_counter_tally() :: term().' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \
