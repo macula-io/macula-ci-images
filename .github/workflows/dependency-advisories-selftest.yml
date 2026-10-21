@@ -19,6 +19,7 @@ on:
       - 'scripts/dependency_advisories.py'
       - 'scripts/embed_dependency_advisories.sh'
       - 'scripts/test_dependency_advisories.py'
+      - 'scripts/pip-audit-requirements.txt'
       - 'scripts/fixtures/dependency_advisories/**'
   workflow_dispatch:
 

@@ -28,6 +28,8 @@ WORKFLOW = REPOSITORY / ".github/workflows/dependency-advisories.yml"
 SOURCE = HERE / "dependency_advisories.py"
 FIXTURES = HERE / "fixtures/dependency_advisories"
 MARKER = "DEPENDENCY_ADVISORIES_SCRIPT"
+REQUIREMENTS_MARKER = "DEPENDENCY_ADVISORIES_REQUIREMENTS"
+REQUIREMENTS = HERE / "pip-audit-requirements.txt"
 
 FAILED = []
 
@@ -45,6 +47,20 @@ def embedded_script():
             after = run.split(f"<<'{MARKER}'", 1)[1].lstrip("\n")
             return after.rsplit("\n" + MARKER, 1)[0] + "\n"
     raise AssertionError(f"no {MARKER} block in {WORKFLOW}")
+
+
+def embedded_requirements():
+    """The hash-pinned wheels pip-audit is installed from, as the workflow
+    carries them."""
+    import yaml
+
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    for step in workflow["jobs"]["advisories"]["steps"]:
+        run = step.get("run") or ""
+        if f"<<'{REQUIREMENTS_MARKER}'" in run:
+            after = run.split(f"<<'{REQUIREMENTS_MARKER}'", 1)[1].lstrip("\n")
+            return after.rsplit("\n" + REQUIREMENTS_MARKER, 1)[0] + "\n"
+    raise AssertionError(f"no {REQUIREMENTS_MARKER} block in {WORKFLOW}")
 
 
 def load(script_text):
@@ -72,6 +88,32 @@ def case_the_embedded_copy_is_the_script(module):
         "run scripts/embed_dependency_advisories.sh")
 
 
+def case_the_embedded_requirements_are_the_pinned_ones(module):
+    embedded = embedded_requirements()
+    assert embedded == REQUIREMENTS.read_text(), (
+        "the workflow's pip-audit requirements are not scripts/pip-audit-requirements.txt: "
+        "run scripts/embed_dependency_advisories.sh")
+    assert "--hash=sha256:" in embedded, "the wheels are not hash-checked"
+
+
+def case_a_waiver_years_ahead_is_refused(module):
+    today = module.parse_today("2026-10-21")
+    for row in ("GHSA-x | undici | dev-only | ceres | 2099-12-31",
+                "GHSA-x | undici | dev-only | ceres | 2027-01-20"):
+        waiver, problem = module.parse_waiver(row, today)
+        assert problem, f"accepted a waiver dated years out: {row}"
+        assert waiver is None, row
+
+
+def case_a_waiver_inside_the_horizon_is_accepted(module):
+    today = module.parse_today("2026-10-21")
+    for row in ("GHSA-x | undici | dev-only | ceres | 2026-10-21",
+                "GHSA-x | undici | dev-only | ceres | 2027-01-19"):
+        waiver, problem = module.parse_waiver(row, today)
+        assert problem is None, (row, problem)
+        assert waiver is not None, row
+
+
 def case_osv_reads_each_package(module):
     found = module.parse_osv(json.loads(fixture("osv.json")))
     assert [f.advisory for f in found] == ["EEF-CVE-2026-56811", "GHSA-w7p3-7y2c-8nq3"], found
@@ -88,7 +130,7 @@ def case_osv_with_nothing_found(module):
 
 
 def case_govulncheck_reads_the_stream(module):
-    found, unreachable = module.parse_govulncheck(fixture("govulncheck.json"))
+    found, _ = module.parse_govulncheck(fixture("govulncheck.json"))
     assert len(found) == 3, found
     stdlib = [f for f in found if f.package == "net/http/internal/http2"]
     assert len(stdlib) == 2, stdlib
@@ -307,6 +349,7 @@ def case_a_directory_that_is_not_there_exits_two(module):
 
 CASES = [
     case_the_embedded_copy_is_the_script,
+    case_the_embedded_requirements_are_the_pinned_ones,
     case_osv_reads_each_package,
     case_osv_with_nothing_found,
     case_govulncheck_reads_the_stream,
@@ -323,6 +366,8 @@ CASES = [
     case_an_expired_waiver_fails_the_run,
     case_a_waiver_without_its_fields_is_refused,
     case_a_waiver_with_no_reason_or_owner_is_refused,
+    case_a_waiver_years_ahead_is_refused,
+    case_a_waiver_inside_the_horizon_is_accepted,
     case_a_waived_finding_is_not_left,
     case_a_clean_scan_exits_zero,
     case_a_finding_exits_one_and_is_annotated,

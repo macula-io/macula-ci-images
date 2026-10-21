@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Write the dependency-advisories check into the workflow that runs it:
-# scripts/dependency_advisories.py into .github/workflows/dependency-advisories.yml.
+# scripts/dependency_advisories.py and the hash-pinned wheels pip-audit is
+# installed from, scripts/pip-audit-requirements.txt, into
+# .github/workflows/dependency-advisories.yml.
 #
 # A reusable workflow runs in the CALLER's repository, so a step cannot run a script
 # from this one: the path is not there. The check therefore travels inside the
@@ -59,3 +61,5 @@ embed() {
 
 embed "$HERE/dependency_advisories.py" "$ROOT/.github/workflows/dependency-advisories.yml" \
   DEPENDENCY_ADVISORIES_SCRIPT
+embed "$HERE/pip-audit-requirements.txt" "$ROOT/.github/workflows/dependency-advisories.yml" \
+  DEPENDENCY_ADVISORIES_REQUIREMENTS

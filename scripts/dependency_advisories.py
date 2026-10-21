@@ -15,8 +15,9 @@ fixed, or a dated, named waiver says why it cannot be yet and when it must be.
   elixir  mix deps.get, then mix.lock to osv-scanner
   go      govulncheck, which reports the vulnerabilities the code can reach
   rust    cargo audit, its vulnerabilities (an unmaintained crate is a warning)
-  node    npm audit --omit=dev: what ships, not the build tooling
-  php     composer install --no-dev, then composer audit --no-dev
+  node    npm audit over the whole lock, dev included: a build tool runs in
+          the release job with its credentials
+  php     composer install, then composer audit over the whole lock
   python  the package installed into a fresh venv, then pip-audit
   csharp  dotnet list package --vulnerable --include-transitive
 
@@ -52,8 +53,8 @@ SCANNER = {
     "elixir": "osv-scanner on mix.lock",
     "go": "govulncheck",
     "rust": "cargo audit",
-    "node": "npm audit --omit=dev",
-    "php": "composer audit --no-dev",
+    "node": "npm audit",
+    "php": "composer audit",
     "python": "pip-audit",
     "csharp": "dotnet list package --vulnerable",
 }
@@ -315,9 +316,11 @@ def parse_cargo_audit(document):
 
 
 def node_findings(cwd, work):
-    """--omit=dev: what the package ships. A vulnerable build tooling crate or
-    npm package is a different problem and is not this gate's."""
-    text = output(["npm", "audit", "--omit=dev", "--json"], cwd, ok=(0, 1))
+    """The whole lock, dev included. A build tool runs inside the release job
+    with the repository's credentials, so a vulnerable one is a way into the
+    artifact, and it is what Dependabot reports. A dev advisory that cannot be
+    fixed gets a waiver like any other, rather than being out of scope."""
+    text = output(["npm", "audit", "--json"], cwd, ok=(0, 1))
     return parse_npm_audit(load_json(text, "npm audit"))
 
 
@@ -355,24 +358,24 @@ def fix_available(available):
 
 def php_findings(cwd, work):
     """composer.lock is not committed in every repository, so the install's own
-    lock is what is read. --no-dev: require-dev is not shipped. A package with
-    no runtime dependency at all (php and its extensions are not packages) has
+    lock is what is read, require-dev included: a developer tool runs inside the
+    release job, and an advisory in one is what Dependabot reports. A package
+    with no dependency at all (php and its extensions are not packages) has
     nothing to audit, and composer audit says so with an error rather than an
     empty answer, so it is asked nothing."""
-    output(["composer", "install", "--no-dev", "--no-interaction", "--quiet"], cwd)
+    output(["composer", "install", "--no-interaction", "--quiet"], cwd)
     if not composer_packages(cwd / "composer.lock"):
         return []
-    text = output(["composer", "audit", "--locked", "--no-dev", "--format=json"], cwd,
-                  ok=(0, 1))
+    text = output(["composer", "audit", "--locked", "--format=json"], cwd, ok=(0, 1))
     return parse_composer(load_json(text, "composer audit"))
 
 
 def composer_packages(lock):
-    """The runtime packages of a composer.lock, which is what --no-dev installs."""
+    """Every package a composer.lock resolves, require and require-dev."""
     if not lock.exists():
         raise CouldNotScan(f"composer install wrote no {lock}")
     document = load_json(lock.read_text(errors="replace"), "composer.lock")
-    return document.get("packages") or []
+    return (document.get("packages") or []) + (document.get("packages-dev") or [])
 
 
 def parse_composer(document):
@@ -399,14 +402,21 @@ def python_findings(cwd, work):
     venv = work / "venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     output([sys.executable, "-m", "venv", str(venv)], cwd)
-    output([str(python), "-m", "pip", "install", "--quiet", "--upgrade", "pip"], cwd)
     pins = resolved_pins(cwd, work, python)
     if not pins:
         return []
-    output([str(python), "-m", "pip", "install", "--quiet", "pip-audit"], cwd)
+    output([str(python), "-m", "pip", "install", "--quiet", "--require-hashes",
+            "-r", str(audit_requirements())], cwd)
     text = output([str(python), "-m", "pip_audit", "--format", "json", "-r", str(pins)],
                   cwd, ok=(0, 1))
     return parse_pip_audit(load_json(text, "pip-audit"))
+
+
+def audit_requirements():
+    """The pinned, hash-checked wheels pip-audit is installed from. It travels
+    beside this script, so the tool that decides the answer cannot change
+    between two runs of the same commit."""
+    return Path(__file__).with_name("pip-audit-requirements.txt")
 
 
 def resolved_pins(cwd, work, python):
@@ -514,6 +524,9 @@ def first_line(text):
 
 
 WAIVER_FIELDS = 5
+# How far ahead a waiver may name a date. A row dated years out is a baseline
+# with a date on it: nobody will look at it again before it is forgotten.
+WAIVER_HORIZON_DAYS = 90
 
 
 def parse_waivers(path, today):
@@ -557,6 +570,10 @@ def parse_waiver(line, today):
     if expires < today:
         return None, (f"{advisory} {package}: the waiver expired on {expires}, "
                       "fix it or open a dated one that covers today")
+    if expires > today + datetime.timedelta(days=WAIVER_HORIZON_DAYS):
+        return None, (f"{advisory} {package}: {expires} is more than "
+                      f"{WAIVER_HORIZON_DAYS} days away, so the waiver would outlive "
+                      "any reason anyone can give for it today")
     return Waiver(advisory, package, why, owner, expires), None
 
 
