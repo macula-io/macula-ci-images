@@ -281,6 +281,54 @@ skipped, so its version is not compared. And because the first tuple in the file
 one read, a release declared inside a `profiles` block is treated as the top-level
 release, which can refuse a good release or check the wrong one.
 
+## Checking a doc's Erlang blocks: `doc-snippets-erlang.yml`
+
+This exists so a reader who copies an Erlang example from a README or a guide gets
+code that works, and an example that stops working fails its repository's CI before
+it ships (macula-codebase-checks#8).
+
+A reusable workflow that compiles the caller's rebar3 project and then reads every
+block fenced `erlang` or `erl` in the docs the package ships (`README*.md` and
+`guides/**.md` at any depth, `docs/**.md` without design records, plans, reports,
+backlogs and registers):
+
+| A block that is | is checked by |
+|---|---|
+| a module (`-module(...)`) | compiling it as it stands, and loading it unless the repository already has a module of that name |
+| forms without a module (functions, records, specs) | compiling them in a module of their own |
+| expressions, or a shell session (`1>` prompts; output lines are not code) | compiling all of one doc's session blocks, in order, as one function body, so a variable one block binds is bound in the next |
+
+Every remote call with a literal module and function must then reach an exported
+function on the code path, which the compiler alone does not check: an example that
+calls an API that is gone fails here. A record a block uses comes from the header that
+defines it, the repository's or a dependency's, so a doc needs no `-include`.
+
+Two markers, as an HTML comment on the line before the fence, which every renderer
+hides:
+
+```markdown
+<!-- doc_snippets: skip a counter-example: this call crashes the gateway worker -->
+<!-- doc_snippets: run -->
+```
+
+A skip needs its reason. `run` executes the doc's session, and an exception or a
+timeout (`timeout`, default 120 s) fails the job. Every guide should carry a run block
+that reaches the real thing the way the repository's tests do, so an example that
+compiles but never fires is caught too.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-erlang.yml@<full sha>
+```
+
+Pin it by full commit, put it where the publish waits on it, and keep `**.md` and
+`guides/**` out of its workflow's `paths-ignore`. macula-codebase-checks' `doc_snippets`
+class reports a publishing repository where any of that is missing. As with the release
+guard, the check travels inside the workflow, written there from
+`scripts/doc_snippets_erlang.escript` by `scripts/embed_doc_snippets.sh`;
+`scripts/test_doc_snippets_erlang.sh` runs its cases against the embedded copy.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

@@ -36,6 +36,13 @@ on:
       - 'scripts/embed_release_guard.sh'
       # The reproducibility check builds and publishes nothing.
       - '.github/workflows/reproducibility.yml'
+      # The doc-snippets check, its self-test and the script it embeds build no
+      # base image (the fixture is under scripts/fixtures/ above).
+      - '.github/workflows/doc-snippets-erlang.yml'
+      - '.github/workflows/doc-snippets-erlang-selftest.yml'
+      - 'scripts/doc_snippets_erlang.escript'
+      - 'scripts/embed_doc_snippets.sh'
+      - 'scripts/test_doc_snippets_erlang.sh'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the

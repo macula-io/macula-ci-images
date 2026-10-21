@@ -1,0 +1,7 @@
+{application, fixture_counter,
+ [{description, "A counter, for the doc snippets self-test"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [kernel, stdlib]},
+  {env, []},
+  {modules, []}]}.

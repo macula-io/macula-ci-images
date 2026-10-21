@@ -1,0 +1,1 @@
+-record(tally, {name :: atom(), count = 0 :: non_neg_integer()}).
