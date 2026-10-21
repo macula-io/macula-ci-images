@@ -405,6 +405,61 @@ the generated configuration) fails the run as one that could not be made.
 `skip` is the one marker. The script is `scripts/doc_snippets_ts.py`, tested as embedded
 by `scripts/test_doc_snippets_ts.sh`.
 
+## Checking a doc's C# blocks: `doc-snippets-csharp.yml`
+
+The same end for a .NET package: every block fenced `csharp`, `cs`, `c#` or `dotnet` in its
+shipped docs compiles against the package's own source, in one generated project that
+ProjectReferences it, with implicit usings and nullable on as `dotnet new` writes them. A
+block that declares a type is a file compiled as it stands; any other block is a fragment
+whose statements become the body of an async method of its own, carrying the usings the
+doc's earlier blocks made, and a `#line` directive reports every error at the doc's own line.
+
+What a fragment leaves to the reader is not an error: a free name, an unused variable, a
+name a block of alternatives binds twice, a return where the wrapping method has none to
+give, and a deconstruction a free name caused. Everything about the package is: a type, a
+member, an argument, the syntax, and a capitalised name used as a type that nothing
+declares, which is how `Session.New()` fails now that `Pool` is the name. A method on a name
+the block does not declare cannot be checked, since its type is not known.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-csharp.yml@<full sha>
+    # with:
+    #   dotnet-version: 10.0.x
+```
+
+`skip` is the one marker. The script is `scripts/doc_snippets_csharp.py`, embedded by
+`scripts/embed_doc_snippets.sh` and tested as embedded by
+`scripts/test_doc_snippets_csharp.sh`.
+
+## Checking a doc's PHP blocks: `doc-snippets-php.yml`
+
+The same end for a Composer package: every block fenced `php` in its shipped docs parses
+under `php -l` and type-checks under PHPStan against the package's own autoloader. A block
+that opens with `<?php` or declares a namespace is a file read as it stands; a block of
+types is that declaration; any other block is a fragment whose statements become the body of
+a function of its own, carrying the `use` statements the doc's earlier blocks made. Every
+reported line is mapped back to the doc line it came from.
+
+What a fragment leaves to the reader is not an error: an undefined variable, and a bare call
+to a function the package and the standard library do not have, which is the reader's own.
+Everything about the package is: a class, a member, a method, an argument count, a call to a
+qualified function, the syntax. Nothing is put in a namespace, so a doc's `Macula\Pool` still
+means what it says.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-php.yml@<full sha>
+    # with:
+    #   php-version: 8.3
+    #   phpstan-version: 2.3.1
+```
+
+`skip` is the one marker. The script is `scripts/doc_snippets_php.py`, embedded by
+`scripts/embed_doc_snippets.sh` and tested as embedded by `scripts/test_doc_snippets_php.sh`.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

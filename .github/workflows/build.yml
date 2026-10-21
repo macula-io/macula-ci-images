@@ -59,6 +59,10 @@ on:
       - '.github/workflows/doc-snippets-csharp-selftest.yml'
       - 'scripts/doc_snippets_csharp.py'
       - 'scripts/test_doc_snippets_csharp.sh'
+      - '.github/workflows/doc-snippets-php.yml'
+      - '.github/workflows/doc-snippets-php-selftest.yml'
+      - 'scripts/doc_snippets_php.py'
+      - 'scripts/test_doc_snippets_php.sh'
   schedule:
     # DAILY, 04:00 UTC. Hourly was considered and rejected on the evidence
     # rather than on cost: the build is free and takes ~60s, so cost is not the

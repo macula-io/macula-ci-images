@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""Every PHP code block a package publishes parses and type-checks against its
+own code.
+
+Usage: doc_snippets_php.py ROOT
+
+ROOT is a Composer package (composer.json at its root) whose dependencies are
+installed, so that vendor/autoload.php loads the package. The docs read are the
+ones a package publishes: README*.md and guides/**.md at any depth, and
+docs/**.md without design records, plans, reports, backlogs or registers. The
+blocks read are the ones fenced php.
+
+Each block becomes a file of its own: `php -l` says whether it parses, and
+PHPStan reads it against the package's autoload. A block that opens with `<?php`
+or declares a namespace is a file and is read as it stands; a block that
+declares a class, an interface, a trait or an enum is that declaration in a
+namespace of its own; any other block is a fragment, whose statements become the
+body of a function in a namespace of its own, so one block never sees another's
+names. The doc's earlier use statements are carried in, as a reader that far
+down the page has them, and every reported line is mapped back to the doc line
+it came from.
+
+What a fragment leaves to the reader is not an error: an undefined variable (a
+realm, a caller the prose has made) and a bare call to a function that the
+package and the standard library do not have (the reader's own, like an Erlang
+placeholder). Everything about the package is: a class that is not there, a
+member, a method, an argument, the syntax, and a call to an undefined function
+that is qualified by a namespace. A method called on a value the block does not
+give a type cannot be checked: its type is not known.
+
+Markers, an HTML comment on the line before the fence:
+
+  <!-- doc_snippets: skip <reason> -->   not checked; the reason is required
+
+Exit 0 when every block parses and type-checks, 1 when any fails (path:line:
+message), 2 when the check cannot run (no composer.json, no vendor/autoload.php,
+no php, no phpstan, and anything the tools report outside the blocks).
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SKIP_DIRS = {".git", "vendor", "node_modules", "_build", "deps", "target", "dist",
+             "artifacts", ".venv"}
+SHIPPED_DOCS = re.compile(
+    r"^(?!(?:.*/)?(?:fixtures|testdata|vectors?)/)"
+    r"(?!docs/(?:design|adr|adrs|decisions|plans?|reports?|research)/)"
+    r"(?!docs/(?:.*/)?[^/]*(?:backlog|register)[^/]*$)"
+    r"(?:(?:.*/)?README[^/]*\.md|(?:.*/)?guides/.+\.md|docs/.+\.md)$", re.I)
+MARKER = re.compile(r"^\s*<!--\s*doc_snippets:\s*(\S+)\s*(.*?)\s*-->\s*$")
+FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([^`\s]*)")
+LANGUAGES = {"php"}
+USE = re.compile(r"^\s*use\s+[A-Za-z_\\][\w\\]*(?:\s+as\s+\w+)?\s*;\s*$")
+NAMESPACE_DECL = re.compile(r"^\s*namespace\s+[A-Za-z_\\][\w\\]*\s*[;{]")
+TYPE_DECL = re.compile(r"^\s*(?:(?:abstract|final|readonly|public|private|protected|static)\s+)*"
+                       r"(?:class|interface|trait|enum)\s+[A-Za-z_]")
+OPEN_TAG = re.compile(r"^\s*<\?php\b")
+PHPSTAN_ERROR = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<msg>.*)$")
+IDENTIFIER = re.compile(r"\s*\[identifier=[\w.]+\]\s*$")
+LINT_ERROR = re.compile(r"in (?P<path>\S+) on line (?P<line>\d+)")
+
+# What only a fragment produces. An undefined variable is the prose's; so is a
+# bare call to a function the package and the standard library do not have,
+# which is the reader's own to write (Realm\now() is not: a qualified name names
+# a namespace the block says exists).
+EXCUSED = [
+    re.compile(r"^Undefined variable: \$\w+\.?$"),
+    re.compile(r"^Variable \$\w+ might not be defined\.?$"),
+    re.compile(r"^Call to an undefined function [A-Za-z_]\w*\(\)\.?$"),
+    re.compile(r"^Function [A-Za-z_]\w* not found\.?$"),
+]
+
+
+def docs(root):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS
+                             and not d.startswith("_doc_snippets"))
+        for name in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+            if SHIPPED_DOCS.search(rel):
+                found.append(rel)
+    return found
+
+
+def blocks(text):
+    """Every fenced block: (fence line, language word, marker, [(line, text)])."""
+    lines, out, i, previous = text.split("\n"), [], 0, None
+    while i < len(lines):
+        opened = FENCE.match(lines[i])
+        if not opened:
+            if lines[i].strip():
+                previous = lines[i]
+            i += 1
+            continue
+        indent, fence = len(opened.group(1)), opened.group(2)
+        word = opened.group(3).strip("{}.").split(",")[0].lower()
+        mark = MARKER.match(previous) if previous else None
+        start, body, i = i + 1, [], i + 1
+        while i < len(lines):
+            close = lines[i].strip()
+            if close.startswith(fence[0] * len(fence)) and not close.strip(fence[0]):
+                break
+            line = lines[i]
+            body.append((i + 1, line[indent:] if line[:indent].strip() == "" else line))
+            i += 1
+        out.append((start, word, (mark.group(1), mark.group(2)) if mark else None, body))
+        previous, i = None, i + 1
+    return out
+
+
+def code_lines(body):
+    """The block's lines that are code: what decides whether it declares a
+    namespace or a type, and whether it has anything to check at all."""
+    return [(n, t) for n, t in body
+            if t.strip() and not t.strip().startswith(("//", "#", "/*", "*"))]
+
+
+def split_uses(body):
+    return [(n, t) for n, t in body if USE.match(t)], [(n, t) for n, t in body if not USE.match(t)]
+
+
+def shape(code):
+    """raw: a file of its own. decls: type declarations. statements: a fragment."""
+    if any(OPEN_TAG.match(t) or NAMESPACE_DECL.match(t) for _, t in code):
+        return "raw"
+    if any(TYPE_DECL.match(t) for _, t in code):
+        return "decls"
+    return "statements"
+
+
+def snippet_lines(index, uses, rest, kind):
+    """The file a block becomes, as (text, doc line or None) pairs, so every
+    line the tools report can be mapped back to the doc.
+
+    Nothing is put in a namespace: a doc writes `Macula\\Pool`, and in a
+    namespace of ours that would name DocSnippetN\\Macula\\Pool and fail for a
+    reason the doc never had. PHPStan reads each file on its own, so two blocks
+    declaring the same name do not collide."""
+    out = [("<?php", None)]
+    if kind != "raw":
+        out += [(t, n) for n, t in uses]
+        if uses:
+            out.append(("", None))
+    if kind == "statements":
+        out += [(f"function snippet_{index}(): void", None), ("{", None)]
+        out += [(t, n) for n, t in rest]
+        out.append(("}", None))
+    else:
+        out += [(t, n) for n, t in rest]
+    return out
+
+
+def write(lines, path):
+    """The file, and the doc line of each of its lines (None for what is ours)."""
+    mapping = {}
+    text = []
+    for number, (line, doc_line) in enumerate(lines, start=1):
+        text.append(line)
+        mapping[number] = doc_line
+    Path(path).write_text("\n".join(text) + "\n")
+    return mapping
+
+
+def mapped(mapping, line, start):
+    """The doc line a generated line came from: its own, or the nearest one above
+    it when the tools name a line we added, as they do for the closing brace."""
+    for number in range(line, 0, -1):
+        if mapping.get(number):
+            return mapping[number]
+    return start + 1
+
+
+def excuse(message, kind):
+    if kind != "statements":
+        return False
+    return any(rule.match(message.strip()) for rule in EXCUSED)
+
+
+def lint(path):
+    """`php -l`, as this PHP's answer on the file."""
+    out = subprocess.run([php(), "-l", str(path)], capture_output=True, text=True)
+    if out.returncode == 0:
+        return None
+    found = LINT_ERROR.search(out.stdout + out.stderr)
+    if not found:
+        return (0, out.stdout.strip() or out.stderr.strip() or "php -l failed")
+    return (int(found.group("line")), (out.stdout + out.stderr).strip().splitlines()[0])
+
+
+def php():
+    return os.environ.get("PHP", "php")
+
+
+def phpstan():
+    return os.environ.get("PHPSTAN", "phpstan")
+
+
+def level():
+    """The PHPStan level. The default reports unknown classes, functions, methods
+    and argument counts, and no argument types, so a doc's own prose-typed values
+    do not have to satisfy the package's signatures."""
+    return os.environ.get("DOC_SNIPPETS_PHPSTAN_LEVEL", "2")
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: doc_snippets_php.py ROOT", file=sys.stderr)
+        return 2
+    root = Path(argv[1]).resolve()
+    if not (root / "composer.json").is_file():
+        print(f"doc_snippets: no composer.json in {root}", file=sys.stderr)
+        return 2
+    autoload = root / "vendor" / "autoload.php"
+    if not autoload.is_file():
+        print(f"doc_snippets: no {autoload}, so the package cannot be loaded: "
+              f"run composer install first", file=sys.stderr)
+        return 2
+    for tool in (php(), phpstan()):
+        if not shutil.which(tool):
+            print(f"doc_snippets: no {tool} on the PATH", file=sys.stderr)
+            return 2
+
+    failures, written, read = [], [], set(docs(root))
+    work = Path(tempfile.mkdtemp(prefix="doc_snippets_php_"))
+    analysis = None
+    try:
+        for doc in sorted(read):
+            carried = []
+            for start, word, marker, body in blocks((root / doc).read_text(errors="replace")):
+                own, rest = split_uses(body)
+                seen = {text for _, text in carried}
+                for number, text in own:
+                    if text not in seen:
+                        carried.append((number, text))
+                        seen.add(text)
+                if word not in LANGUAGES:
+                    continue
+                if marker and marker[0] == "skip":
+                    if not marker[1]:
+                        failures.append((doc, start, "skip gives no reason"))
+                    continue
+                if marker:
+                    failures.append((doc, start, f"unknown marker '{marker[0]}'"))
+                    continue
+                code = code_lines(rest)
+                if not code:
+                    continue
+                index = len(written)
+                kind = shape(code)
+                path = work / f"s{index}.php"
+                mapping = write(snippet_lines(index, carried, rest, kind), path)
+                written.append((doc, start, kind, path, mapping))
+        parsed = True
+        for doc, start, kind, path, mapping in written:
+            found = lint(path)
+            if found is None:
+                continue
+            parsed = False
+            line, message = found
+            failures.append((doc, mapped(mapping, line, start), message))
+        if parsed and written:
+            analysis = subprocess.run(
+                [phpstan(), "analyse", "--no-progress", f"--level={level()}",
+                 "--error-format=raw",
+                 f"--autoload-file={autoload}", "--memory-limit=1G", str(work)],
+                cwd=work, capture_output=True, text=True)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    if analysis is not None:
+        outside = []
+        by_path = {str(path): (doc, start, mapping, kind)
+                   for doc, start, kind, path, mapping in written}
+        for line in (analysis.stdout + "\n" + analysis.stderr).splitlines():
+            error = PHPSTAN_ERROR.match(line.strip())
+            if not error:
+                continue
+            if error.group("path") not in by_path:
+                outside.append(line.strip())
+                continue
+            doc, start, mapping, kind = by_path[error.group("path")]
+            line_number = int(error.group("line"))
+            message = IDENTIFIER.sub("", error.group("msg")).strip()
+            if excuse(message, kind):
+                continue
+            failures.append((doc, mapped(mapping, line_number, start), message))
+        if outside:
+            shown = "\n  ".join(outside[:10])
+            print(f"doc_snippets: phpstan reported on a file that is not a doc block, so "
+                  f"nothing here can be trusted:\n  {shown}", file=sys.stderr)
+            for path, line, message in sorted(set(failures)):
+                print(f"{path}:{line}: {message}")
+            return 2
+        if analysis.returncode not in (0, 1):
+            print(f"doc_snippets: phpstan itself failed (exit {analysis.returncode}):\n  "
+                  f"{analysis.stderr.strip()[:2000]}", file=sys.stderr)
+            for path, line, message in sorted(set(failures)):
+                print(f"{path}:{line}: {message}")
+            return 2
+
+    for path, line, message in sorted(set(failures)):
+        print(f"{path}:{line}: {message}")
+    print(f"doc_snippets: {len(set(failures))} failure(s) in {len(written)} block(s)",
+          file=sys.stderr)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

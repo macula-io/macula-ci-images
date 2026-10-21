@@ -1,0 +1,14 @@
+{
+  "name": "macula-io/fixture-counter",
+  "description": "A counter, so the self-test has a published API to call.",
+  "type": "library",
+  "license": "Apache-2.0",
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "FixtureCounter\\": "src/"
+    }
+  }
+}
