@@ -380,6 +380,29 @@ imported. A method on an undefined name cannot be checked.
 `skip` is the one marker. The script is `scripts/doc_snippets_python.py`, tested as embedded
 by `scripts/test_doc_snippets_python.sh`.
 
+## Checking a doc's TypeScript blocks: `doc-snippets-ts.yml`
+
+The same end for an npm package written in TypeScript: every block fenced `ts`,
+`typescript`, `tsx`, `js`, `javascript`, `mjs` or `jsx` in its shipped docs type-checks
+against the package. Each block is a module file of its own as it stands (a top-level
+`await` is valid), and tsc reads them with the package's own name mapped to its source
+after `npm ci`, so nothing is built first. JavaScript is checked as JavaScript.
+
+What a block leaves to the reader is not an error: an undeclared name, a name declared
+twice, a return with no function. An export, property, method, argument or type the
+package does not have is, so is a module it cannot find. An error outside the blocks
+(the package's own source, the generated configuration) fails the run as one that could
+not be made.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-ts.yml@<full sha>
+```
+
+`skip` is the one marker. The script is `scripts/doc_snippets_ts.py`, tested as embedded
+by `scripts/test_doc_snippets_ts.sh`.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

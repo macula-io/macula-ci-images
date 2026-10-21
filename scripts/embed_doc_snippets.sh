@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Write each doc-snippets check into the workflow that runs it:
 # scripts/doc_snippets_erlang.escript, scripts/doc_snippets_go.py and
-# scripts/doc_snippets_python.py.
+# scripts/doc_snippets_python.py and scripts/doc_snippets_ts.py.
 #
 # A reusable workflow runs in the CALLER's repository, so a step cannot run a script
 # from this one: the path is not there. The check therefore travels inside the
@@ -65,4 +65,6 @@ embed "$HERE/doc_snippets_go.py" "$ROOT/.github/workflows/doc-snippets-go.yml" \
   DOC_SNIPPETS_GO_SCRIPT || status=1
 embed "$HERE/doc_snippets_python.py" "$ROOT/.github/workflows/doc-snippets-python.yml" \
   DOC_SNIPPETS_PYTHON_SCRIPT || status=1
+embed "$HERE/doc_snippets_ts.py" "$ROOT/.github/workflows/doc-snippets-ts.yml" \
+  DOC_SNIPPETS_TS_SCRIPT || status=1
 exit "$status"
