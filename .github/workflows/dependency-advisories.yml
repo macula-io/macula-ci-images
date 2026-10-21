@@ -278,13 +278,13 @@ jobs:
           block-insecure and block-abandoned and nothing else; and a committed .npmrc may
           not point npm audit at another registry or set a key that prunes the install, a
           bare line counting as key=true because that is how npm's ini reads it. A
-          composer.json that switches packagist off, under either its name or the legacy
-          "packagist", is refused too, and a packagist entry is allowed only as exactly
-          {type: composer, url: a packagist URL}: exclude, only and filter remove packages
-          before the audit is asked, a vcs entry has no advisory provider, and any other
-          url is a different source of advisories. An unnamed composer entry at a
-          packagist URL replaces the default just as a named one does, so it is read the
-          same way.
+          composer.json is read by three rules that hold for every repositories entry
+          whatever it is called: an entry carrying exclude, only or filter is refused,
+          because those remove packages before the audit is asked; an entry that replaces
+          packagist, which is either packagist name or any composer entry at a packagist
+          url (Config::merge auto-deactivates the default there, before it looks at the
+          name), must be exactly {type: composer, url: a packagist url}; and false under
+          either packagist name is refused, since it leaves no advisory source at all.
           Anything else is refused, naming the key (exit 2). Likewise a rebar.lock or
           mix.lock that pins a git dependency is refused: it ships, but no advisory
           database can look it up, so the scanned set would quietly be smaller than the
@@ -903,44 +903,49 @@ jobs:
 
 
           def packagist_refusal(document):
-              """composer.json can take the one source of advisories away, and Composer
-              gives it several ways to do it: switch packagist off, use the legacy name
-              "packagist" (Config::merge treats it as packagist.org), redefine
-              packagist.org at another URL, or filter it. A packagist entry is allowed
-              only as exactly {type: composer, url: a packagist URL}: exclude, only and
-              filter remove names before the audit is asked (Composer filters them in
-              FilterRepository::getSecurityAdvisories), and a vcs entry has no advisory
-              provider at all. Both names are read in both shapes, a list of one-key
-              objects and an object keyed by name, and so is an UNNAMED composer entry at
-              a packagist URL, which Config::merge also lets replace the default."""
+              """composer.json can take advisories away from the audit, and six rounds of
+              probing its shapes showed the answer has to be a rule rather than a list of
+              names. Three, applied to every entry whatever it is called:
+
+              a. an entry carrying exclude, only or filter removes packages before the
+                 audit is asked (Composer filters them in
+                 FilterRepository::getSecurityAdvisories), so it is refused at any url;
+              b. an entry that replaces packagist, which is either packagist name or any
+                 composer entry at a packagist url (Config::merge auto-deactivates the
+                 default there, before it looks at the name), must be exactly
+                 {type: composer, url: a packagist url};
+              c. false under either packagist name is refused, since it leaves no
+                 advisory source at all.
+              """
               for name, entry in repository_declarations(document):
-                  if not replaces_packagist(name, entry):
-                      continue
-                  refusal = packagist_entry_refusal(name, entry)
+                  refusal = repository_refusal(name, entry)
                   if refusal:
                       return refusal
               return None
 
 
-          def replaces_packagist(name, entry):
-              """Whether this declaration takes the place of the default repository."""
-              if name is not None:
-                  return name in PACKAGIST_NAMES
-              return is_table(entry) and bool(PACKAGIST_URL_PATTERN.search(str(entry.get("url", ""))))
-
-
-          def packagist_entry_refusal(name, entry):
-              where = name if name is not None else f"an unnamed entry at {entry.get('url', 'no url')!r}"
-              if entry is False:
+          def repository_refusal(name, entry):
+              where = name if name is not None else (entry.get("url") if is_table(entry) else entry)
+              filtering = sorted(set(entry) & COMPOSER_FILTER_KEYS) if is_table(entry) else []
+              if filtering:
+                  return (f'defines {where} with {", ".join(filtering)}: those keys remove packages '
+                          "before the audit is asked, so a package named there is audited as clean "
+                          "with no date and no owner")
+              if entry is False and name in PACKAGIST_NAMES:
                   return (f'switches {where} off in "repositories", which leaves composer audit with '
                           "no advisory source to ask; it would answer clean because nobody was asked")
+              if not replaces_packagist(name, entry):
+                  return None
+              return packagist_entry_refusal(where, entry)
+
+
+          def packagist_entry_refusal(where, entry):
               if not is_table(entry):
                   return f"declares {where} as {entry!r}, which cannot be read as a repository"
               extra = sorted(set(entry) - PACKAGIST_ENTRY_KEYS)
               if extra:
-                  return (f'defines {where} with {", ".join(extra)}: those keys remove packages '
-                          "before the audit is asked, so a package named there is audited as clean "
-                          "with no date and no owner")
+                  return (f"defines {where} with {', '.join(extra)}, which a packagist entry may not "
+                          "carry; it is allowed only as type and url")
               if entry.get("type") != "composer":
                   return (f"defines {where} with type {entry.get('type')!r}, which has no advisory "
                           "provider, so the audit would be told nothing")
@@ -956,16 +961,33 @@ jobs:
           PACKAGIST_NAMES = ("packagist.org", "packagist")
           PACKAGIST_URLS = ("https://repo.packagist.org", "https://packagist.org")
           # Config::merge disables the default for a composer-type entry whose url matches
-          # this, named or not, so an unnamed entry can replace it as well.
+          # this, named or not, so an entry of any name can replace it.
           PACKAGIST_URL_PATTERN = re.compile(
               r"^https?://(?:[a-z0-9-.]+\.)?packagist\.org(/|$)", re.IGNORECASE)
-          # Everything a packagist entry may say. exclude, only and filter all subtract
-          # packages from what the audit is asked; a vcs entry has no advisory provider.
+          # Everything a packagist entry may say.
           PACKAGIST_ENTRY_KEYS = {"type", "url"}
+          # The keys that remove packages before the audit is asked
+          # (FilterRepository::getSecurityAdvisories). They are refused at any url, under
+          # any name, because a filtered repository is not a smaller scan by accident.
+          COMPOSER_FILTER_KEYS = {"exclude", "only", "filter"}
 
 
           def packagist_url(repository):
               return str(repository.get("url", "")).rstrip("/")
+
+
+          def replaces_packagist(name, entry):
+              """Whether this declaration takes the place of the default repository:
+              either packagist name, or a composer entry at a packagist url whatever it is
+              called, since Config::merge auto-deactivates the default on the url before
+              it looks at the name."""
+              if name in PACKAGIST_NAMES:
+                  return True
+              return is_table(entry) and entry.get("type") == "composer" and at_packagists_url(entry)
+
+
+          def at_packagists_url(entry):
+              return bool(PACKAGIST_URL_PATTERN.search(str(entry.get("url", ""))))
 
 
           def repository_declarations(document):

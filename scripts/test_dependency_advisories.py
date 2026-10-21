@@ -515,6 +515,57 @@ def case_php_refuses_an_unnamed_entry_at_packagists_url(module):
     raise AssertionError("an unnamed packagist entry with an exclude list was accepted")
 
 
+def case_php_refuses_a_packagist_url_under_another_name(module):
+    """The auto-deactivate check runs before any name is looked at, so a
+    composer entry at a packagist url replaces the default whatever it is
+    called: a "mirror" key is the same swap as "packagist.org"."""
+    for repositories in (
+            {"mirror": {"type": "composer", "url": "https://repo.packagist.org",
+                        "exclude": ["vendor/vuln"]}},
+            {"mirror": {"type": "composer", "url": "https://x.packagist.org",
+                        "only": ["vendor/x"]}},
+            [{"mirror": {"type": "composer", "url": "https://repo.packagist.org",
+                         "filter": True}}]):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": repositories}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert "remove packages" in str(problem), (repositories, problem)
+            continue
+        raise AssertionError(
+            f"a filtered packagist at another name was audited as if clean: {repositories}")
+
+
+def case_php_allows_a_plain_mirror_that_is_not_packagist(module):
+    """An added composer repository at another host, with nothing that filters
+    it, is a second source of advisories: packagist still answers."""
+    directory = Path(tempfile.mkdtemp())
+    (directory / "composer.json").write_text(json.dumps(
+        {"name": "macula/fixture",
+         "repositories": {"private": {"type": "composer",
+                                      "url": "https://repo.example.invalid"}}}))
+    module.refuse_an_undated_ignore("php", directory)
+
+
+def case_php_refuses_a_filter_on_a_mirror_that_is_not_packagist(module):
+    """The filter rule is about the key, not the url: an exclude list on any
+    repository removes packages before the audit is asked."""
+    for key in ("exclude", "only", "filter"):
+        entry = {"type": "composer", "url": "https://repo.example.invalid",
+                 key: ["vendor/private-dep"] if key != "filter" else True}
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": {"private": entry}}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert key in str(problem), (key, problem)
+            continue
+        raise AssertionError(f"a mirror carrying {key} was accepted")
+
+
 def case_php_allows_packagist_defined_at_its_own_url(module):
     """Naming packagist at its own URL, with nothing else, changes nothing."""
     for repositories in (
@@ -727,6 +778,9 @@ CASES = [
     case_php_refuses_a_filtered_packagist,
     case_php_refuses_a_packagist_entry_without_an_advisory_provider,
     case_php_refuses_an_unnamed_entry_at_packagists_url,
+    case_php_refuses_a_packagist_url_under_another_name,
+    case_php_allows_a_plain_mirror_that_is_not_packagist,
+    case_php_refuses_a_filter_on_a_mirror_that_is_not_packagist,
     case_php_allows_packagist_defined_at_its_own_url,
     case_an_ecosystem_without_an_ignore_file_is_left_alone,
     case_python_reads_the_build_backends_requirements,
