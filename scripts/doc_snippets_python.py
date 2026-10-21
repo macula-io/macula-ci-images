@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Every Python code block a package publishes type-checks against its own code.
+
+Usage: doc_snippets_python.py ROOT
+
+ROOT is a Python project (pyproject.toml or setup.py at its root) whose package
+carries type hints. The docs read are the ones a package publishes: README*.md
+and guides/**.md at any depth, and docs/**.md without design records, plans,
+reports, backlogs or registers. The blocks read are the ones fenced python, py
+or pycon; in a block with >>> prompts only the prompted lines are code.
+
+Each block becomes the body of an async function of its own, so a top-level
+await or return is valid and a block is checked as it stands, and mypy reads
+them all against the package's source (src/ or the root), the way an editor
+would. Each error names the doc and its own line.
+
+What a block leaves to the reader is not an error: a name it uses and does not
+define (a pool, a realm the prose has made), a name it binds twice by listing
+alternatives, a return value in a block that has no function around it.
+Everything about the package is: an attribute, method, argument or import it
+does not have, a wrong type where its hints say otherwise, the syntax, and a
+package of its own named and never imported. A method on a name the block does
+not define cannot be checked: its type is not known. A block reads the
+imports the doc's earlier blocks made, as a reader's session would.
+
+Markers, an HTML comment on the line before the fence:
+
+  <!-- doc_snippets: skip <reason> -->   not checked; the reason is required
+
+Exit 0 when every block type-checks, 1 when any fails (path:line: message), 2
+when the check cannot run (not a Python project, no mypy).
+"""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+SKIP_DIRS = {".git", "node_modules", "_build", "deps", "target", "dist", ".venv", "venv",
+             ".tox", "build", "__pycache__"}
+SHIPPED_DOCS = re.compile(
+    r"^(?!(?:.*/)?(?:fixtures|testdata|vectors?)/)"
+    r"(?!docs/(?:design|adr|adrs|decisions|plans?|reports?|research)/)"
+    r"(?!docs/(?:.*/)?[^/]*(?:backlog|register)[^/]*$)"
+    r"(?:(?:.*/)?README[^/]*\.md|(?:.*/)?guides/.+\.md|docs/.+\.md)$", re.I)
+MARKER = re.compile(r"^\s*<!--\s*doc_snippets:\s*(\S+)\s*(.*?)\s*-->\s*$")
+FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})\s*([^`\s]*)")
+PROMPT = re.compile(r"^(>>>|\.\.\.)( |$)")
+ERROR = re.compile(r"^(?P<file>[^:]+\.py):(?P<line>\d+)(?::\d+)?: error: (?P<msg>.*?)(?:\s+\[(?P<code>[\w-]+)\])?$")
+BARE_UNDEFINED = re.compile(r'^Name "([A-Za-z_]\w*)" is not defined$')
+
+# What only a block of a doc produces.
+FRAGMENT_ONLY = [
+    re.compile(r'^Name "[A-Za-z_]\w*" already defined'),
+    re.compile(r"^No return value expected$"),
+    # `[...]` or `f(...)`: code the doc leaves out on purpose.
+    re.compile(r"EllipsisType"),
+]
+IMPORT = re.compile(r"^(?:import\s+\S|from\s+\S+\s+import\s)")
+
+
+def docs(root):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+        for name in sorted(filenames):
+            rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+            if SHIPPED_DOCS.search(rel):
+                found.append(rel)
+    return found
+
+
+def blocks(text):
+    """Every fenced block: (fence line, language word, marker, [(line, text)])."""
+    lines, out, i, previous = text.split("\n"), [], 0, None
+    while i < len(lines):
+        opened = FENCE.match(lines[i])
+        if not opened:
+            if lines[i].strip():
+                previous = lines[i]
+            i += 1
+            continue
+        indent, fence = len(opened.group(1)), opened.group(2)
+        word = opened.group(3).strip("{}.").split(",")[0].lower()
+        mark = MARKER.match(previous) if previous else None
+        start, body, i = i + 1, [], i + 1
+        while i < len(lines):
+            close = lines[i].strip()
+            if close.startswith(fence[0] * len(fence)) and not close.strip(fence[0]):
+                break
+            line = lines[i]
+            body.append((i + 1, line[indent:] if line[:indent].strip() == "" else line))
+            i += 1
+        out.append((start, word, (mark.group(1), mark.group(2)) if mark else None, body))
+        previous, i = None, i + 1
+    return out
+
+
+def code_of(body):
+    """The block's code as (doc line, text): prompted lines only when it has
+    prompts, every line otherwise."""
+    if any(PROMPT.match(t) for _, t in body):
+        return [(n, t[4:] if len(t) > 3 else "") for n, t in body if PROMPT.match(t)]
+    return body
+
+
+def packages_of(root):
+    """The import names the project's own packages have, and where their source is."""
+    base = root / "src" if (root / "src").is_dir() else root
+    names = {p.name for p in base.iterdir()
+             if p.is_dir() and (p / "__init__.py").is_file()} if base.is_dir() else set()
+    names |= {p.stem for p in base.glob("*.py")} if base != root else set()
+    return names, base
+
+
+def main(argv):
+    if len(argv) != 2:
+        print("usage: doc_snippets_python.py ROOT", file=sys.stderr)
+        return 2
+    root = Path(argv[1]).resolve()
+    if not ((root / "pyproject.toml").is_file() or (root / "setup.py").is_file()):
+        print(f"doc_snippets: no pyproject.toml or setup.py in {root}", file=sys.stderr)
+        return 2
+    if subprocess.run([sys.executable, "-m", "mypy", "--version"],
+                      capture_output=True).returncode != 0:
+        print("doc_snippets: mypy is not installed for this interpreter", file=sys.stderr)
+        return 2
+
+    own, base = packages_of(root)
+    failures, files = [], {}
+    work = Path(tempfile.mkdtemp(prefix="doc_snippets_python_"))
+    try:
+        for doc in docs(root):
+            # The imports a reader has made by this point in the doc: a later
+            # block that uses reckon_db.X after the first block imported it is
+            # read in the same session.
+            carried = []
+            for start, word, marker, body in blocks((root / doc).read_text(errors="replace")):
+                if word not in ("python", "py", "pycon", "python3"):
+                    continue
+                if marker and marker[0] == "skip":
+                    if not marker[1]:
+                        failures.append((doc, start, "skip gives no reason"))
+                    continue
+                if marker:
+                    failures.append((doc, start, f"unknown marker '{marker[0]}'"))
+                    continue
+                code = code_of(body)
+                if not any(t.strip() and not t.strip().startswith("#") for _, t in code):
+                    continue
+                name = f"snippet_{len(files)}.py"
+                # The carried imports, then the wrapper; the block's own lines
+                # follow, one each.
+                text = ("".join(f"{t}\n" for t in carried)
+                        + "async def _snippet() -> None:\n"
+                        + "".join(f"    {t}\n" if t.strip() else "\n" for _, t in code)
+                        + "    pass\n")
+                # A syntax error stops mypy for every file, so it is found here
+                # and the block is left out of the type check.
+                try:
+                    compile(text, name, "exec")
+                except SyntaxError as error:
+                    at = (error.lineno or 1) - len(carried) - 2
+                    lines = [n for n, _ in code]
+                    failures.append((doc, lines[at] if 0 <= at < len(lines) else start,
+                                     f"syntax error: {error.msg}"))
+                    continue
+                (work / name).write_text(text)
+                files[name] = (doc, [n for n, _ in code], len(carried) + 1)
+                carried += [t.strip() for _, t in code
+                            if IMPORT.match(t) and not t.rstrip().endswith(("(", "\\"))]
+        if files:
+            env = dict(os.environ, MYPYPATH=str(base))
+            out = subprocess.run(
+                [sys.executable, "-m", "mypy", "--ignore-missing-imports", "--follow-imports=silent",
+                 "--no-error-summary", "--show-error-codes", "--no-color-output",
+                 "--no-incremental", "--explicit-package-bases", *sorted(files)],
+                cwd=work, env=env, capture_output=True, text=True)
+            for line in out.stdout.splitlines() + out.stderr.splitlines():
+                error = ERROR.match(line.strip())
+                if not error or os.path.basename(error.group("file")) not in files:
+                    continue
+                doc, lines, header = files[os.path.basename(error.group("file"))]
+                at = int(error.group("line")) - header - 1
+                if at < 0:
+                    continue  # a carried import: reported where its own block is
+                doc_line = lines[at] if 0 <= at < len(lines) else lines[-1]
+                message = error.group("msg")
+                bare = BARE_UNDEFINED.match(message)
+                if bare and bare.group(1) in own:
+                    failures.append((doc, doc_line, f"{message}: the package {bare.group(1)} "
+                                                    f"is used and never imported"))
+                    continue
+                if bare or any(rule.search(message) for rule in FRAGMENT_ONLY):
+                    continue
+                failures.append((doc, doc_line, message))
+            if out.returncode not in (0, 1):
+                print(f"doc_snippets: mypy could not run: {out.stderr.strip()}", file=sys.stderr)
+                return 2
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    for path, line, message in sorted(set(failures)):
+        print(f"{path}:{line}: {message}")
+    print(f"doc_snippets: {len(set(failures))} failure(s) in {len(files)} block(s)", file=sys.stderr)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

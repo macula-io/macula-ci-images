@@ -358,6 +358,28 @@ is not known.
 `skip` is the one marker. The script is `scripts/doc_snippets_go.py`, embedded by
 `scripts/embed_doc_snippets.sh` and tested as embedded by `scripts/test_doc_snippets_go.sh`.
 
+## Checking a doc's Python blocks: `doc-snippets-python.yml`
+
+The same end for a typed Python package: every block fenced `python`, `py`, `python3`
+or `pycon` in its shipped docs type-checks against the package. Each block is the body
+of an async function of its own (a top-level `await` is valid), carrying the imports the
+doc's earlier blocks made, and mypy reads it against the package's source without
+installing it. Syntax is checked first, so one broken block cannot hide the rest.
+
+What a block leaves to the reader is not an error: an undefined name, a name bound twice,
+a return value, `...`. An attribute, method, argument, keyword or import the package does
+not have is, so is a wrong type against its hints, and a package of its own used and never
+imported. A method on an undefined name cannot be checked.
+
+```yaml
+  docs:
+    permissions: { contents: read }
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-python.yml@<full sha>
+```
+
+`skip` is the one marker. The script is `scripts/doc_snippets_python.py`, tested as embedded
+by `scripts/test_doc_snippets_python.sh`.
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:
