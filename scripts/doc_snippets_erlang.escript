@@ -354,14 +354,39 @@ chunks([T | Rest], Current, Acc) -> chunks(Rest, [T | Current], Acc).
 
 %% A chunk is a form or a sequence of expressions. Macros are read as atoms here,
 %% only to tell which: the preprocessor sees the real text when it compiles.
+
+%% Some epp directives never parse as forms. -define(NAME, Body) carries two
+%% terms, which the attribute grammar refuses, so it would fall through to the
+%% expression grammar and read as a call negated by a unary minus - and a
+%% module example that defines a macro would be reported as a mix of forms and
+%% expressions. The chunk is an attribute when it opens with one of epp's own
+%% directives, and epp is what reads it when the block compiles. The list is
+%% closed on purpose: "opens with -Atom" is not enough, because a session
+%% starting with unary minus, -abs(X) or -math:pi(), is a sequence of
+%% expressions. 'if' and 'else' are reserved words, so they scan as such.
+attribute([{'-', _}, {atom, _, A} | _]) ->
+    lists:member(A, [define, undef, ifdef, ifndef, elif, endif, include,
+                     include_lib, error, warning, feature, file]);
+attribute([{'-', _}, {K, _} | _]) -> K =:= 'if' orelse K =:= 'else';
+attribute(_) -> false.
+
 kind(Chunk) ->
     Plain = unmacro(Chunk),
     case erl_parse:parse_form(Plain) of
         {ok, Form} -> {form, Form};
         {error, _} ->
-            case erl_parse:parse_exprs(Plain) of
-                {ok, Exprs} -> {exprs, Exprs};
-                {error, E} -> {error, E}
+            case attribute(Chunk) of
+                true ->
+                    {form, {attribute, erl_anno:new(erl_scan:line(hd(Chunk))),
+                            '$attribute', []}};
+                false ->
+                    %% parse_exprs wraps the chunk in a function of its own, so
+                    %% a record field access parses here as it will inside the
+                    %% compile that follows.
+                    case erl_parse:parse_exprs(Plain) of
+                        {ok, Exprs} -> {exprs, Exprs};
+                        {error, E} -> {error, E}
+                    end
             end
     end.
 
@@ -486,8 +511,17 @@ emit([], _, Acc) -> lists:reverse(Acc);
 emit([T | Rest], Line, Acc) ->
     At = erl_scan:line(T),
     Pad = lists:duplicate(max(0, At - Line), $\n),
-    Text = case element(1, T) of dot -> ","; _ -> erl_scan:text(T) end,
-    emit(Rest, At + count_newlines(Text), [[Pad, " ", Text] | Acc]).
+    Kind = element(1, T),
+    Text = case Kind of dot -> ","; _ -> erl_scan:text(T) end,
+    %% A '.' is one token in two senses: the full stop that ends a form, and
+    %% the field separator in E#event.timestamp. The separator must touch the
+    %% field name, or a re-scan reads it as a full stop and the block ends
+    %% mid-expression, so no space follows it.
+    Sep = case Acc of
+              [[_, _, "."] | _] -> "";
+              _ -> " "
+          end,
+    emit(Rest, At + count_newlines(Text), [[Pad, Sep, Text] | Acc]).
 
 count_newlines(Text) -> length([C || C <- Text, C =:= $\n]).
 

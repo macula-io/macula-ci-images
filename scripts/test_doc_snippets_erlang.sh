@@ -196,6 +196,16 @@ with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \
   '```erlang' 'name() -> ?MODULE.' '```'
+with_block "a module carrying a -define is a module" 0 "0 failure(s)" \
+  '```erlang' '-module(doc_case_define).' '-export([f/0]).' '-define(STEP, 1).' 'f() -> ?STEP.' '```'
+with_block "a record field access in a session is an expression" 0 "0 failure(s)" \
+  '```erlang' 'N = T2#tally.count,' 'N + 1.' '```'
+with_block "a session opening with unary minus is an expression" 0 "0 failure(s)" \
+  '```erlang' '-abs(-3).' '```'
+with_block "a session opening with -math:pi() is an expression" 0 "0 failure(s)" \
+  '```erlang' '-math:pi().' '```'
+with_block "a -define beside a bare expression is still a mix" 1 "mixes forms and expressions" \
+  '```erlang' '-define(STEP, 1).' 'STEP.' '```'
 with_block "a doc's own version of a package module is not loaded over it" 0 "0 failure(s)" \
   '```erlang' '-module(fixture_counter).' '-export([new/1]).' 'new(_) -> broken.' '```' \
   '<!-- doc_snippets: run -->' '```erlang' '{tally, x, 0} = fixture_counter:new(x).' '```'
