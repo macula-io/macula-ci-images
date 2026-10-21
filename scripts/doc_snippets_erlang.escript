@@ -22,10 +22,10 @@
 %%                 ignored): each block is the body of a function whose
 %%                 parameters are the variables it uses and does not bind, so
 %%                 a fragment that uses a Client the prose has made is checked
-%%                 for its calls and syntax as it stands. A doc with a run
-%%                 marker is also compiled strictly, every session block in
-%%                 order as one body, and executed: there a variable must be
-%%                 bound by an earlier block
+%%                 for its calls and syntax as it stands. A run marker also
+%%                 compiles the session blocks up to it strictly, in order as
+%%                 one body, and executes them: there a variable must be bound
+%%                 by an earlier block
 %%
 %% Every remote call with a literal module and function must reach an exported
 %% function of a module on the code path, so an example that calls an API that
@@ -38,7 +38,8 @@
 %% Markers, an HTML comment on the line before the fence:
 %%
 %%   <!-- doc_snippets: skip <reason> -->   not checked; the reason is required
-%%   <!-- doc_snippets: run -->              the doc's session is executed, and
+%%   <!-- doc_snippets: run -->              the doc's session blocks up to and
+%%                                           including this one are executed, and
 %%                                           an exception or a timeout fails
 %%
 %% Exit 0 when every block passes, 1 when any fails (each failure printed as
@@ -189,8 +190,11 @@ check_doc(Root, Doc, Headers, Work, Opts) ->
     Erlang = [B || #{word := W} = B <- blocks(unicode:characters_to_list(Bin)),
                    W =:= "erlang" orelse W =:= "erl"],
     {Marked, Checked} = lists:foldr(fun(B, {F, C}) -> marked(Doc, B, F, C) end, {[], []}, Erlang),
-    Run = lists:any(fun(#{marker := M}) -> M =:= {"run", ""} end, Checked),
+    RunTo = lists:max([0 | [L || #{line := L, marker := {"run", ""}} <- Checked]]),
     Classified = [classify(Doc, B) || B <- Checked],
+    %% What a run executes: the session blocks up to the last run-marked block.
+    RunChunks = lists:append([Chunks || {#{line := L}, {session, Chunks}}
+                                            <- lists:zip(Checked, Classified), L =< RunTo]),
     Broken = [F || {error, F} <- Classified],
     Modules = [B || {module, B} <- Classified],
     Forms = [B || {forms, B} <- Classified],
@@ -201,8 +205,8 @@ check_doc(Root, Doc, Headers, Work, Opts) ->
     Failures = Marked ++ Broken ++ lists:append([E || {error, E} <- Compiled]),
     Loaded = [Loaded || {ok, Loaded} <- Compiled],
     Calls = lists:append([missing_calls(Doc, Fs) || {_, Fs} <- Loaded]),
-    Ran = case Run andalso Failures =:= [] andalso Calls =:= [] of
-              true -> run_session(Doc, lists:append(Sessions), Headers, Work, Opts);
+    Ran = case RunTo > 0 andalso Failures =:= [] andalso Calls =:= [] of
+              true -> run_session(Doc, RunChunks, Headers, Work, Opts);
               false -> []
           end,
     Failures ++ Calls ++ Ran.

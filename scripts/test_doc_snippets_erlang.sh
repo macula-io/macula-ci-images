@@ -167,6 +167,9 @@ with_block "an example without its final full stop" 0 "0 failure(s)" \
   '```erlang' 'fixture_counter:count(T2)' '```'
 with_block "a fragment using a variable the prose made passes" 0 "0 failure(s)" \
   '```erlang' 'N = fixture_counter:count(Tally),' 'N + 1.' '```'
+with_block "a run executes the blocks up to it, not the ones after" 0 "0 failure(s)" \
+  '<!-- doc_snippets: run -->' '```erlang' '2 = fixture_counter:count(T2).' '```' \
+  '```erlang' 'fixture_counter:count(NotBoundHere).' '```'
 with_block "a block of comments only" 0 "0 failure(s)" \
   '```erlang' '%% events from one stream arrive in order' '```'
 with_block "a macro in a forms block" 0 "0 failure(s)" \

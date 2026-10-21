@@ -296,7 +296,7 @@ backlogs and registers):
 |---|---|
 | a module (`-module(...)`) | compiling it as it stands, and loading it unless the repository already has a module of that name |
 | forms without a module (functions, records, specs) | compiling them in a module of their own |
-| expressions, or a shell session (`1>` prompts; output lines are not code) | compiling each block as a function whose parameters are the variables it uses and does not bind, so a fragment that uses a `Client` the prose made is checked for its calls and syntax as it stands |
+| expressions, or a shell session (`1>` prompts; output lines are not code) | compiling each block as a function whose parameters are the variables it uses and does not bind, so a fragment that uses a `Client` the prose made is checked for its calls and syntax as it stands. A misspelt variable is a parameter too: only a `run` block catches it |
 
 Every remote call with a literal module and function must then reach an exported
 function on the code path, which the compiler alone does not check: an example that
@@ -313,8 +313,9 @@ hides:
 <!-- doc_snippets: run -->
 ```
 
-A skip needs its reason. `run` compiles all of the doc's session blocks, in order, as
-one function body, where a variable must be bound by an earlier block, and executes it:
+A skip needs its reason. `run` compiles the doc's session blocks up to and including
+the marked one, in order, as one function body, where a variable must be bound by an
+earlier block, and executes it:
 an exception or a timeout (`timeout`, default 120 s) fails the job. Every guide should carry a run block
 that reaches the real thing the way the repository's tests do, so an example that
 compiles but never fires is caught too.
