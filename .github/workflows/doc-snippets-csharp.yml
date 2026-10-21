@@ -125,6 +125,13 @@ jobs:
           so nothing catches it, and a method called on a name the block does not declare
           cannot be checked: its type is not known.
 
+          A block that declares a type is wrapped in a namespace of its own, so two blocks
+          may declare the same name. A block written for one of those positions fails for a
+          reason the doc did not have: a file-scoped `namespace Foo;`, a `global using`, and
+          top-level statements beside a record are file-level in C# and are read inside
+          `namespace DocSnippetN { }` here. It fails closed rather than quietly, and the
+          block is written as a fragment or marked skip.
+
           Markers, an HTML comment on the line before the fence:
 
             <!-- doc_snippets: skip <reason> -->   not checked; the reason is required
@@ -434,17 +441,20 @@ jobs:
                               failures.append((doc, start, f"unknown marker '{marker[0]}'"))
                               continue
                           own, rest = split_usings(body)
-                          code = code_lines(rest)
-                          if not code:
-                              continue
                           # Only a block this check reads carries its usings on: a block in
                           # another language, or one skipped as a counter-example, lends
-                          # nothing to the page below it.
+                          # nothing to the page below it. A block that is nothing but
+                          # usings carries them too, and has nothing of its own to compile:
+                          # "Add the namespace:" followed by a using alone is a shape a
+                          # README writes, and the block after it uses the alias.
                           seen = {text for _, text in carried}
                           for number, text in own:
                               if text not in seen:
                                   carried.append((number, text))
                                   seen.add(text)
+                          code = code_lines(rest)
+                          if not code:
+                              continue
                           index = len(written)
                           (work / "snippets" / f"s{index}.cs").write_text(
                               snippet_file(index, str(root / doc), carried, rest, kind_of(code)))

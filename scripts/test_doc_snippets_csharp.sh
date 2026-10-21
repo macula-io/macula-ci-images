@@ -157,6 +157,11 @@ with_block "a marker that is not one" 1 "unknown marker 'ignore'" \
 fresh_doc "a type the package provides, with its using left out" 1 \
   "guides/fresh.md:2: The name 'Tally' does not exist in the current context" \
   '```csharp' 'Tally.New("x");' '```'
+# A block that is nothing but a using carries it on: "Add the namespace:" then a
+# using alone is a README shape, and the block after it uses the alias.
+fresh_doc "a using-only block carries its alias to the block below" 0 "0 failure(s)" \
+  '```csharp' 'using TC = FixtureCounter.Tally;' '```' '' '```csharp' 'var t = TC.New("x");' '```'
+
 fresh_doc "a value the prose made passes" 0 "0 failure(s)" \
   '```csharp' 'realm.Bump();' '```'
 fresh_doc "a name a block of alternatives binds twice passes" 0 "0 failure(s)" \
