@@ -12,6 +12,8 @@
 #     # with:                            # all optional
 #     #   working-directory: .           # the repository, relative to its root
 #     #   dotnet-version: 10.0.x         # the SDK the package's projects need
+#     #   submodules: recursive          # when the package builds from a submodule;
+#     #                                  # its .proto files, say, or a shared props file
 #     #   runs-on: '["ubuntu-latest"]'
 #
 # Pin it by FULL COMMIT SHA, put it where the publish waits on it, and keep `**.md`
@@ -67,6 +69,11 @@ on:
         required: false
         type: string
         default: '10.0.x'
+      submodules:
+        description: 'Checkout submodules too: false, true or recursive; default false'
+        required: false
+        type: string
+        default: 'false'
       runs-on:
         description: 'JSON runs-on value; default ["ubuntu-latest"]'
         required: false
@@ -81,7 +88,12 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 30
     steps:
+      # The package is built from this checkout, so a project that takes its
+      # sources from a submodule (a .proto file, a shared props file) needs them
+      # here or it does not compile and every block fails for the wrong reason.
       - uses: actions/checkout@v4
+        with:
+          submodules: ${{ inputs.submodules }}
 
       - uses: actions/setup-dotnet@v4
         with:
