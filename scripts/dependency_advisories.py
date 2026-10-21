@@ -658,11 +658,14 @@ def is_table(value):
 
 def packagist_disabled(document):
     """composer.json {"repositories": [{"packagist.org": false}]} turns the one
-    source of advisories off, leaving composer audit nothing to ask."""
-    for repository in document.get("repositories") or []:
-        if is_table(repository) and repository.get("packagist.org") is False:
-            return True
-    return False
+    source of advisories off, leaving composer audit nothing to ask. Composer
+    takes the repositories either as a list or as an object keyed by name, and
+    its documentation shows the switch in both shapes, so both are read."""
+    repositories = document.get("repositories")
+    if is_table(repositories):
+        return repositories.get("packagist.org") is False
+    return any(is_table(repository) and repository.get("packagist.org") is False
+               for repository in repositories or [])
 
 
 def php_ignores(cwd):

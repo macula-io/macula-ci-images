@@ -401,17 +401,19 @@ def case_a_mix_lock_of_hex_packages_is_not_refused(module):
 
 def case_php_refuses_a_disabled_packagist(module):
     """With packagist.org switched off, composer audit has no advisory source to
-    ask and answers clean because nobody was asked."""
-    directory = Path(tempfile.mkdtemp())
-    (directory / "composer.json").write_text(json.dumps(
-        {"name": "macula/fixture",
-         "repositories": [{"packagist.org": False}]}))
-    try:
-        module.refuse_an_undated_ignore("php", directory)
-    except module.CouldNotScan as problem:
-        assert "packagist.org" in str(problem), problem
-        return
-    raise AssertionError("a composer.json with no advisory source was audited as if clean")
+    ask and answers clean because nobody was asked. Composer takes repositories
+    as a list or as an object keyed by name, and both switch it off."""
+    for repositories in ([{"packagist.org": False}], {"packagist.org": False}):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "composer.json").write_text(json.dumps(
+            {"name": "macula/fixture", "repositories": repositories}))
+        try:
+            module.refuse_an_undated_ignore("php", directory)
+        except module.CouldNotScan as problem:
+            assert "packagist.org" in str(problem), (repositories, problem)
+            continue
+        raise AssertionError(
+            f"a composer.json with no advisory source was audited as if clean: {repositories}")
 
 
 def case_an_ecosystem_without_an_ignore_file_is_left_alone(module):
