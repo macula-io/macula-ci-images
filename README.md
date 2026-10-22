@@ -495,6 +495,15 @@ CSS custom properties, which `rsvg-convert` renders black. The script is
 by `scripts/test_c4_model.sh`; `release-guard-selftest.yml`'s sibling
 `c4-model-selftest.yml` also calls the workflow once, on a fixture repository.
 
+## Architecture
+
+What this repository talks to and what it is made of, as a C4 model:
+[`architecture/README.md`](architecture/README.md), drawn by
+`architecture/c4_diagrams.py` and held by `c4-model-gate.yml`, which calls the
+`c4-model.yml` gate above.
+
+![macula-ci-images system context](assets/c4-context.svg)
+
 ## Rebuilds
 
 **Daily** (04:00 UTC), plus on change and on demand. The schedule is the point:

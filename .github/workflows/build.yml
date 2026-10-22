@@ -71,6 +71,11 @@ on:
       - 'scripts/embed_c4_model.sh'
       - 'scripts/test_c4_model.sh'
       - 'scripts/fixtures/c4_model/**'
+      # This repository's own C4 model: the diagrams, their generator and the
+      # workflow that holds them. No Containerfile copies any of it.
+      - '.github/workflows/c4-model-gate.yml'
+      - 'assets/**'
+      - 'architecture/**'
       # The dependency-advisories gate, its self-test, the scripts it embeds and
       # the wheels it pins touch no Containerfile either (the fixtures are under
       # scripts/fixtures/ above).

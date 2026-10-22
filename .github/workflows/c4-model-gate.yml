@@ -1,0 +1,26 @@
+# The C4 Context and Component diagrams stay in assets/ and stay shown by a README
+# (macula-codebase-checks#10, macula-ci-images#7). No path filters: a change that
+# touches only the diagrams or a README is exactly the change this must see.
+#
+# This repository hosts the gate and still calls it by full commit sha, as every
+# caller does: the sweep counts a gate only in that form, and a pinned call means a
+# change to c4-model.yml cannot loosen the check on its own commit.
+# c4-model-selftest.yml proves the workflow under test on a fixture; this call
+# holds this repository's own model.
+name: c4 model gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  c4-model:
+    permissions:
+      contents: read
+    uses: macula-io/macula-ci-images/.github/workflows/c4-model.yml@83a76a358456bf2f7d6c919ad5e8fe7fd2162ce3

@@ -1,0 +1,194 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 960" role="img" aria-label="macula-ci-images components">
+<title>macula-ci-images components</title>
+<style>
+.t-name { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 700; }
+.t-desc { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12.5px; }
+.t-rel { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; paint-order: stroke; stroke-width: 4px; stroke-linejoin: round; }
+.t-code { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 13px; font-weight: 600; }
+.t-type { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; }
+.t-bound { font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.t-leg { font-family: "Atkinson Hyperlegible", "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; font-size: 12px; }
+.edge { fill: none; stroke-width: 1.25; }
+.edge-later { fill: none; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bg { fill: #FFFFFF; }
+.b-sys { fill: #F5E9CC; stroke: #A56F0A; stroke-width: 2; }
+.b-per { fill: #E3EBF2; stroke: #3B5B7A; stroke-width: 1.25; }
+.b-mac { fill: #E6E4EE; stroke: #5E5A78; stroke-width: 1.25; }
+.b-ext { fill: #ECEFED; stroke: #8A9791; stroke-width: 1.25; }
+.b-cmp { fill: #FFFFFF; stroke: #8A9791; stroke-width: 1.25; }
+.b-later { fill: none; stroke: #8A9791; stroke-width: 1.25; stroke-dasharray: 5 4; }
+.bound { fill: none; stroke: #B3BDB8; stroke-width: 1; }
+.head { fill: #3B5B7A; }
+.t-name, .t-code { fill: #16201D; }
+.t-type, .t-bound, .t-leg { fill: #66736E; }
+.t-desc { fill: #34413C; }
+.t-rel { fill: #66736E; stroke: #FFFFFF; }
+.edge, .edge-later { stroke: #8A9791; }
+.arrowhead { fill: #8A9791; }
+@media (prefers-color-scheme: dark) {
+.bg { fill: #171F1C; }
+.b-sys { fill: #3A2E13; stroke: #E3AA3C; }
+.b-per { fill: #1D2A36; stroke: #8EB4D8; }
+.b-mac { fill: #26243A; stroke: #A9A4C8; }
+.b-ext { fill: #1C2421; stroke: #7D8B85; }
+.b-cmp { fill: #171F1C; stroke: #7D8B85; }
+.b-later { stroke: #7D8B85; }
+.bound { stroke: #4A5752; }
+.head { fill: #8EB4D8; }
+.t-name, .t-code { fill: #E6ECE9; }
+.t-type, .t-bound, .t-leg { fill: #93A09A; }
+.t-desc { fill: #C3CDC8; }
+.t-rel { fill: #93A09A; stroke: #171F1C; }
+.edge, .edge-later { stroke: #7D8B85; }
+.arrowhead { fill: #7D8B85; }
+}
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<rect class="bg" x="0" y="0" width="1000" height="960"/>
+<rect class="bound" x="16" y="40" width="684" height="866" rx="12"/>
+<text class="t-bound" x="32" y="62">macula-ci-images [GitHub repository]</text>
+<rect class="b-cmp" x="32" y="70" width="208" height="130" rx="10"/>
+<text class="t-code" x="48" y="98">reproducibility</text>
+<text class="t-type" x="48" y="116">[reproducibility.yml]</text>
+<text class="t-desc" x="48" y="140">Sundays and on change: two</text>
+<text class="t-desc" x="48" y="156">uncached builds, the same</text>
+<text class="t-desc" x="48" y="172">manifest digest or red</text>
+<rect class="b-sys" x="254" y="70" width="430" height="130" rx="10"/>
+<text class="t-code" x="270" y="98">build.yml</text>
+<text class="t-type" x="270" y="116">[workflow: daily, weekly uncached, push]</text>
+<text class="t-desc" x="270" y="140">pinned-downloads: every download checksum-</text>
+<text class="t-desc" x="270" y="156">pinned (check_pinned_downloads.py), first.</text>
+<text class="t-desc" x="270" y="172">build: newest_dated_base.py picks the base by</text>
+<text class="t-desc" x="270" y="188">digest; image_labels.sh; push. rocksdb: after.</text>
+<rect class="bound" x="24" y="220" width="668" height="256" rx="12"/>
+<text class="t-bound" x="40" y="242">Base images [Containerfile.*, pushed to ghcr.io/macula-io]</text>
+<rect class="b-cmp" x="32" y="254" width="208" height="92" rx="10"/>
+<text class="t-code" x="48" y="282">macula-ci-pq</text>
+<text class="t-type" x="48" y="300">[Containerfile.ci-pq]</text>
+<text class="t-desc" x="48" y="324">mix: Elixir 1.19.6, OTP</text>
+<text class="t-desc" x="48" y="340">28.4.3, Rust 1.98.1</text>
+<rect class="b-cmp" x="254" y="254" width="208" height="92" rx="10"/>
+<text class="t-code" x="270" y="282">ci-pq ex118-*</text>
+<text class="t-type" x="270" y="300">[Containerfile.ci-pq-ex118]</text>
+<text class="t-desc" x="270" y="324">Elixir 1.18.4 on OTP 28.4.3,</text>
+<text class="t-desc" x="270" y="340">for mix releases on 1.18</text>
+<rect class="b-cmp" x="476" y="254" width="208" height="92" rx="10"/>
+<text class="t-code" x="492" y="282">macula-ci-otp</text>
+<text class="t-type" x="492" y="300">[Containerfile.ci-otp]</text>
+<text class="t-desc" x="492" y="324">rebar3 3.27.0, OTP 28.4.3,</text>
+<text class="t-desc" x="492" y="340">Rust 1.98.1</text>
+<rect class="b-cmp" x="32" y="370" width="208" height="92" rx="10"/>
+<text class="t-code" x="48" y="398">macula-ci-gleam</text>
+<text class="t-type" x="48" y="416">[Containerfile.ci-gleam]</text>
+<text class="t-desc" x="48" y="440">gleam118-*: Gleam 1.18.1</text>
+<text class="t-desc" x="48" y="456">on OTP 28.4.3</text>
+<rect class="b-cmp" x="254" y="370" width="208" height="92" rx="10"/>
+<text class="t-code" x="270" y="398">macula-pq-runtime</text>
+<text class="t-type" x="270" y="416">[Containerfile.pq-runtime]</text>
+<text class="t-desc" x="270" y="440">Debian trixie, OpenSSL 3.5+:</text>
+<text class="t-desc" x="270" y="456">a release's runtime stage</text>
+<rect class="b-cmp" x="476" y="370" width="208" height="92" rx="10"/>
+<text class="t-code" x="492" y="398">*-rocksdb (three)</text>
+<text class="t-type" x="492" y="416">[Containerfile.rocksdb]</text>
+<text class="t-desc" x="492" y="440">ci-otp, pq-runtime, ci-pq-ex118</text>
+<text class="t-desc" x="492" y="456">plus librocksdb 11.1.2</text>
+<rect class="bound" x="24" y="496" width="668" height="290" rx="12"/>
+<text class="t-bound" x="40" y="518">Shared gates [reusable workflows, called pinned by full commit sha]</text>
+<rect class="b-cmp" x="254" y="530" width="208" height="112" rx="10"/>
+<text class="t-code" x="270" y="558">release-guard</text>
+<text class="t-type" x="270" y="576">[release-guard.yml]</text>
+<text class="t-desc" x="270" y="600">A v* tag: on the default</text>
+<text class="t-desc" x="270" y="616">branch, and the version the</text>
+<text class="t-desc" x="270" y="632">repository publishes</text>
+<rect class="b-cmp" x="476" y="530" width="208" height="112" rx="10"/>
+<text class="t-code" x="492" y="558">attest-image</text>
+<text class="t-type" x="492" y="576">[attest-image.yml]</text>
+<text class="t-desc" x="492" y="600">Runs the guard, then keyless</text>
+<text class="t-desc" x="492" y="616">cosign: signature, SPDX SBOM,</text>
+<text class="t-desc" x="492" y="632">SLSA provenance, by digest</text>
+<rect class="b-cmp" x="32" y="530" width="208" height="112" rx="10"/>
+<text class="t-code" x="48" y="558">dependency-advisories</text>
+<text class="t-type" x="48" y="576">[dependency-advisories.yml]</text>
+<text class="t-desc" x="48" y="600">Eight ecosystems: a known</text>
+<text class="t-desc" x="48" y="616">advisory fails the run, or a</text>
+<text class="t-desc" x="48" y="632">dated waiver in the repo</text>
+<rect class="b-cmp" x="32" y="656" width="208" height="112" rx="10"/>
+<text class="t-code" x="48" y="684">doc-snippets-*</text>
+<text class="t-type" x="48" y="702">[six workflows]</text>
+<text class="t-desc" x="48" y="726">Erlang, Go, Python, TS, C#,</text>
+<text class="t-desc" x="48" y="742">PHP: published code blocks</text>
+<text class="t-desc" x="48" y="758">compile and run</text>
+<rect class="b-cmp" x="254" y="656" width="208" height="112" rx="10"/>
+<text class="t-code" x="270" y="684">c4-model</text>
+<text class="t-type" x="270" y="702">[c4-model.yml]</text>
+<text class="t-desc" x="270" y="726">A context and a component</text>
+<text class="t-desc" x="270" y="742">diagram in assets/, shown by</text>
+<text class="t-desc" x="270" y="758">a README</text>
+<rect class="b-cmp" x="476" y="656" width="208" height="112" rx="10"/>
+<text class="t-name" x="492" y="684">Self-tests</text>
+<text class="t-type" x="492" y="702">[*-selftest.yml]</text>
+<text class="t-desc" x="492" y="726">Each check is a script in</text>
+<text class="t-desc" x="492" y="742">scripts/, embedded in its</text>
+<text class="t-desc" x="492" y="758">workflow, tested as embedded</text>
+<rect class="b-cmp" x="32" y="800" width="652" height="92" rx="10"/>
+<text class="t-code" x="48" y="828">scripts/ci_gate.sh</text>
+<text class="t-type" x="48" y="846">[local tool]</text>
+<text class="t-desc" x="48" y="870">Runs a job's run steps on a commit, inside the job's own pinned image, as root, as CI runs them.</text>
+<rect class="b-ext" x="760" y="70" width="224" height="96" rx="10"/>
+<text class="t-name" x="776" y="98">Docker Hub</text>
+<text class="t-type" x="776" y="116">[External system]</text>
+<text class="t-desc" x="776" y="140">hexpm and debian bases</text>
+<rect class="b-ext" x="760" y="176" width="224" height="96" rx="10"/>
+<text class="t-name" x="776" y="204">ghcr.io/macula-io</text>
+<text class="t-type" x="776" y="222">[External: registry]</text>
+<text class="t-desc" x="776" y="246">The published base images</text>
+<rect class="b-ext" x="760" y="300" width="224" height="110" rx="10"/>
+<text class="t-name" x="776" y="328">Upstream releases</text>
+<text class="t-type" x="776" y="346">[External systems]</text>
+<text class="t-desc" x="776" y="370">rebar3, hex, Elixir, Gleam,</text>
+<text class="t-desc" x="776" y="386">rustup, erlang-rocksdb</text>
+<rect class="b-ext" x="760" y="530" width="224" height="112" rx="10"/>
+<text class="t-name" x="776" y="558">Sigstore</text>
+<text class="t-type" x="776" y="576">[External system]</text>
+<text class="t-desc" x="776" y="600">Fulcio, and the public</text>
+<text class="t-desc" x="776" y="616">Rekor log</text>
+<rect class="b-ext" x="760" y="656" width="224" height="112" rx="10"/>
+<text class="t-name" x="776" y="684">Macula repositories' CI</text>
+<text class="t-type" x="776" y="702">[External: ours]</text>
+<text class="t-desc" x="776" y="726">Call the gates; the gates</text>
+<text class="t-desc" x="776" y="742">run in the caller's job</text>
+<path class="edge" d="M684 110H760" marker-end="url(#a)"/>
+<text class="t-rel" x="722" y="100" text-anchor="middle">base,</text>
+<text class="t-rel" x="722" y="128" text-anchor="middle">by digest</text>
+<path class="edge" d="M684 188H760" marker-end="url(#a)"/>
+<text class="t-rel" x="722" y="180" text-anchor="middle">pushes</text>
+<path class="edge" d="M136 200V220" marker-end="url(#a)"/>
+<text class="t-rel" x="144" y="214">rebuilds</text>
+<path class="edge" d="M470 200V220" marker-end="url(#a)"/>
+<text class="t-rel" x="478" y="214">builds, pushes</text>
+<path class="edge" d="M580 346V370" marker-end="url(#a)"/>
+<text class="t-rel" x="588" y="362">FROM by digest</text>
+<path class="edge" d="M692 355H760" marker-end="url(#a)"/>
+<text class="t-rel" x="726" y="345" text-anchor="middle">downloads,</text>
+<text class="t-rel" x="726" y="373" text-anchor="middle">checked</text>
+<path class="edge" d="M476 586H462" marker-end="url(#a)"/>
+<path class="edge" d="M684 586H760" marker-end="url(#a)"/>
+<text class="t-rel" x="730" y="576" text-anchor="middle">signs</text>
+<path class="edge" d="M760 712H692" marker-end="url(#a)"/>
+<text class="t-rel" x="726" y="702" text-anchor="middle">call by</text>
+<text class="t-rel" x="726" y="730" text-anchor="middle">full sha</text>
+<rect class="b-sys" x="24" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="54" y="942">In scope</text>
+<rect class="b-per" x="110.8" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="140.8" y="942">Person</text>
+<rect class="b-mac" x="184.39999999999998" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="214.39999999999998" y="942">Macula infrastructure</text>
+<rect class="b-ext" x="357.0" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="387.0" y="942">External system</text>
+<rect class="b-cmp" x="490.0" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="520.0" y="942">Container or component</text>
+<rect class="b-later" x="669.2" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="699.2" y="942">Planned, not built</text>
+<rect class="bound" x="822.0" y="930" width="22" height="14" rx="3"/>
+<text class="t-leg" x="852.0" y="942">Boundary</text>
+</svg>
