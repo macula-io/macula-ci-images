@@ -71,6 +71,10 @@ awk -v open_mark="<<'C4_MODEL_SCRIPT'" -v close_mark="C4_MODEL_SCRIPT" '
 ' "$WORKFLOW" > "$CHECK"
 
 check "the block in c4-model.yml is the script" cmp -s "$SOURCE" "$CHECK"
+# A parse error after the exit that ends every run is invisible until the day
+# the flow changes, so the script is read whole by the shell before it is run.
+check "c4_model.sh parses" bash -n "$SOURCE"
+check "the block in c4-model.yml parses" bash -n "$CHECK"
 check "c4-model.yml is valid YAML" \
   python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$WORKFLOW"
 
@@ -173,6 +177,26 @@ new_case; dir="$DIR"
 printf "# service\n\nSee architecture/README.md for the model.\n\n![context](assets/c4-context.svg)\n" \
   > "$dir/README.md"
 run_case "the path in prose is not a link" 1 \
+  "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
+
+# The link is the path, exactly. GitHub serves paths case-sensitively, and a
+# target that only starts with `architecture` is another file.
+new_case; dir="$DIR"
+printf '# service\n\n[the model](architecture/readme.md)\n\n![context](assets/c4-context.svg)\n' \
+  > "$dir/README.md"
+run_case "a link to architecture/readme.md in the wrong case fails" 1 \
+  "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n[the model](architecture-old.md)\n\n![context](assets/c4-context.svg)\n' \
+  > "$dir/README.md"
+run_case "a link to a sibling that starts with the same word fails" 1 \
+  "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n[the model](architecture/assets/c4-context.svg)\n\n![context](assets/c4-context.svg)\n' \
+  > "$dir/README.md"
+run_case "a link into the architecture directory is not the model" 1 \
   "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
 
 # One mark above the fold (#26).
