@@ -75,13 +75,15 @@ check "c4-model.yml is valid YAML" \
   python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$WORKFLOW"
 
 # service <dir>: the repository mcl-fovea is, with its two diagrams shown by both
-# READMEs. Every case starts from it and takes one thing away.
+# READMEs and the front page linking the model. Every case starts from it and
+# takes one thing away.
 service() {
   local dir="$1"
   mkdir -p "$dir/assets"
   printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-context.svg"
   printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-components.svg"
-  printf '# service\n\n![context](assets/c4-context.svg)\n' > "$dir/README.md"
+  printf '# service\n\nThe model is in [architecture/README.md](architecture/README.md).\n\n![context](assets/c4-context.svg)\n' \
+    > "$dir/README.md"
   mkdir -p "$dir/architecture"
   printf '# architecture\n\n![components](assets/c4-components.svg)\n' \
     > "$dir/architecture/README.md"
@@ -130,7 +132,8 @@ run_case "the rest of the name is free, and case does not matter" 0 "" bash "$CH
 
 new_case; dir="$DIR"
 mv "$dir/assets/c4-context.svg" "$dir/assets/C4-CONTEXT.SVG"
-printf '# service\n\n![context](assets/C4-CONTEXT.SVG)\n' > "$dir/README.md"
+printf '# service\n\n[architecture/README.md](architecture/README.md)\n\n![context](assets/C4-CONTEXT.SVG)\n' \
+  > "$dir/README.md"
 run_case "an upper-case name is the same diagram" 0 "" bash "$CHECK" "$dir"
 
 new_case; dir="$DIR"
@@ -146,6 +149,51 @@ new_case; dir="$DIR"
 printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-context-dark.svg"
 run_case "every diagram must be shown, not the first one found" 1 \
   "c4-context-dark.svg is not shown" bash "$CHECK" "$dir"
+
+# The model must be REACHED from the front page (#26). The architecture README is
+# where a service keeps its whole model; a front page that never links it leaves
+# the model where only someone who already knows about it will look.
+new_case; dir="$DIR"
+printf '# service\n\n![context](assets/c4-context.svg)\n' > "$dir/README.md"
+run_case "a front page that does not link the model fails" 1 \
+  "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n[the model](architecture/)\n\n![context](assets/c4-context.svg)\n' \
+  > "$dir/README.md"
+run_case "a link to the architecture directory is a link to the model" 0 "" \
+  bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n[the model](./architecture/README.md#the-context)\n\n![context](assets/c4-context.svg)\n' \
+  > "$dir/README.md"
+run_case "a ./ and an anchor do not stop it being the same link" 0 "" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf "# service\n\nSee architecture/README.md for the model.\n\n![context](assets/c4-context.svg)\n" \
+  > "$dir/README.md"
+run_case "the path in prose is not a link" 1 \
+  "README.md does not link architecture/README.md" bash "$CHECK" "$dir"
+
+# One mark above the fold (#26).
+PICTURE="<p align=\"center\"><picture><img src=\"assets/logo.svg\"></picture></p>"
+
+new_case; dir="$DIR"
+printf '# service\n\n%s\n\n%s\n\n![context](assets/c4-context.svg)\n' "$PICTURE" "$PICTURE" \
+  > "$dir/README.md"
+run_case "two logos in the header fail" 1 "2 <picture> blocks in its header" \
+  bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n%s\n\n[the model](architecture/README.md)\n\n![context](assets/c4-context.svg)\n' \
+  "$PICTURE" > "$dir/README.md"
+run_case "one logo in the header passes" 0 "" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# service\n\n%s\n\n[the model](architecture/README.md)\n\n![context](assets/c4-context.svg)\n\n## Screenshots\n\n%s\n' \
+  "$PICTURE" "$PICTURE" > "$dir/README.md"
+run_case "a picture below the first heading is a screenshot, not a logo" 0 "" \
+  bash "$CHECK" "$dir"
 
 mkdir -p "$WORK/empty"
 run_case "an empty directory is not a model" 1 "no assets/*component*.svg" \
