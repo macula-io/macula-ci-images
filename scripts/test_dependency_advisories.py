@@ -18,6 +18,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -235,6 +236,65 @@ def case_a_lock_that_names_a_git_dependency_is_refused(module):
 
 def case_a_lock_of_released_packages_is_not_refused(module):
     module.refuse_a_foreign_dependency(FIXTURES / "rebar.lock")
+
+
+def case_a_failed_command_reports_its_stdout(module):
+    """rebar3 writes its errors to stdout, so a failure that reports only stderr
+    reads as "no output" and the operator learns nothing (macula-ci-images#11)."""
+    with tempfile.TemporaryDirectory() as work:
+        try:
+            module.output(["sh", "-c", "echo 'error: rebar3 says why'; "
+                                       "echo 'error: and this on stderr' >&2; exit 3"],
+                          Path(work))
+        except module.CouldNotScan as refused:
+            message = str(refused)
+            assert "rebar3 says why" in message, message
+            assert "and this on stderr" in message, message
+            return
+    raise AssertionError("a command that exited non-zero was read as a success")
+
+
+def case_the_erlang_scan_resolves_the_lock_without_compiling(module):
+    """A service whose dependencies need native libraries cannot compile on a bare
+    runner. The scan asks rebar3 for the resolved lock only, so anything that
+    builds is a regression (macula-ci-images#11)."""
+    with tempfile.TemporaryDirectory() as work:
+        root = Path(work)
+        project = root / "project"
+        project.mkdir()
+        binaries = root / "bin"
+        binaries.mkdir()
+        rebar3 = binaries / "rebar3"
+        rebar3.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" != \"get-deps\" ]; then\n"
+            "  echo \"refusing $1: this scan must not need a toolchain\" >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "cat > rebar.lock <<'LOCK'\n"
+            '{"1.2.0",\n'
+            '[{<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.21.0">>},0}]}.\n'
+            "LOCK\n")
+        rebar3.chmod(0o755)
+        osv = binaries / "osv-scanner"
+        osv.write_text("#!/bin/sh\ncat <<'REPORT'\n{\"results\": []}\nREPORT\n")
+        osv.chmod(0o755)
+
+        saved = {name: os.environ.get(name) for name in ("PATH", "OSV_SCANNER")}
+        os.environ["PATH"] = f"{binaries}:{saved['PATH']}"
+        os.environ["OSV_SCANNER"] = str(osv)
+        try:
+            found = module.erlang_findings(project, project)
+            assert (project / "rebar.lock").exists(), "the fake rebar3 wrote no lock"
+            assert found == [], found
+        except module.CouldNotScan as refused:
+            raise AssertionError(f"the erlang scan still needs a build: {refused}") from refused
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 def case_rust_refuses_a_cargo_audit_ignore_list(module):
@@ -758,6 +818,8 @@ CASES = [
     case_a_rebar_lock_becomes_hex_packages,
     case_a_lock_that_names_a_git_dependency_is_refused,
     case_a_lock_of_released_packages_is_not_refused,
+    case_a_failed_command_reports_its_stdout,
+    case_the_erlang_scan_resolves_the_lock_without_compiling,
     case_rust_refuses_a_cargo_audit_ignore_list,
     case_rust_allows_a_cargo_audit_config_without_ignores,
     case_rust_refuses_a_severity_threshold,

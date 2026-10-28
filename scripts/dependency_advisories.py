@@ -11,7 +11,7 @@ repository's waivers, prints what is left, and exits 1 while anything is left
 unwaived. There is no baseline and no "known findings" file: an advisory is
 fixed, or a dated, named waiver says why it cannot be yet and when it must be.
 
-  erlang  rebar3 compile, then the resolved rebar.lock as an SBOM, to osv-scanner
+  erlang  rebar3 get-deps, then the resolved rebar.lock as an SBOM, to osv-scanner
   elixir  mix deps.get, then mix.lock to osv-scanner
   go      govulncheck, which reports the vulnerabilities the code can reach,
           at call and package level; a module-level one is named, not failed
@@ -124,7 +124,7 @@ def output(command, cwd, ok=(0,)):
         raise CouldNotScan(f"{command[0]} is not installed: {missing}") from missing
     if done.returncode not in ok:
         raise CouldNotScan(f"{' '.join(command)} exited {done.returncode}: "
-                           f"{last_lines(done.stderr)}")
+                           f"{last_lines(done.stdout)} / stderr: {last_lines(done.stderr)}")
     return done.stdout
 
 
@@ -150,11 +150,15 @@ def osv_scanner():
 
 def erlang_findings(cwd, work):
     """A rebar3 project commits no lock, so the build's resolved one is what is
-    read: rebar3 compile writes rebar.lock from the versions it actually used."""
-    output(["rebar3", "compile"], cwd)
+    read. `rebar3 get-deps` fetches the dependencies and writes rebar.lock
+    without building the project, which is the whole point: a service whose
+    dependencies need native libraries (librocksdb, NIFs) scans here instead of
+    failing to compile on a bare runner. rebar3 has no `lock` task as of 3.27, so
+    get-deps is the command that resolves without compiling."""
+    output(["rebar3", "get-deps"], cwd)
     lock = cwd / "rebar.lock"
     if not lock.exists():
-        raise CouldNotScan(f"rebar3 compile wrote no {lock}")
+        raise CouldNotScan(f"rebar3 get-deps wrote no {lock}")
     refuse_a_foreign_dependency(lock)
     packages = rebar_packages(lock)
     if not packages:
