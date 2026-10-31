@@ -15,6 +15,16 @@
 #     # otp-version, elixir-version, node-version, python-version,
 #     # dotnet-version, php-version: the toolchain, when the default is not yours
 #     # runs-on: '["ubuntu-latest"]'
+#     # container: ghcr.io/macula-io/macula-ci-otp:<tag>@sha256:<digest>
+#
+# `runs-on` and `container` go together once the caller is off a hosted runner. A
+# self-hosted runner sets no ImageOS, which setup-beam reads to choose a prebuilt
+# toolchain, so the install steps fail there before they start; an image carries the
+# toolchain instead, and "the toolchain is the image" is how every other self-hosted job
+# in this organisation already works. With `container` set, the setup-* steps are skipped
+# and the job asserts the image has what the ecosystem needs. Pin the image by digest,
+# and use the same image the repository's build uses, so the scan reads the lock the
+# release resolves: ghcr.io/macula-io/macula-ci-otp for erlang, macula-ci-pq for elixir.
 #
 # Pin the call by FULL COMMIT SHA, as with release-guard.yml. Two more things make
 # it a gate rather than a job that exists, and macula-codebase-checks reports a
@@ -116,6 +126,16 @@ on:
         required: false
         type: string
         default: '["ubuntu-latest"]'
+      container:
+        description: >-
+          Image to run the scan inside, by digest, with the ecosystem's toolchain already in it
+          (macula-io/macula-ci-otp, macula-io/macula-ci-pq). Empty (the default) keeps the hosted
+          behaviour: the runner installs the toolchain with setup-beam and friends. Set it on a
+          self-hosted runner, which sets no ImageOS for setup-beam to read, and which this
+          organisation's jobs reach the toolchain through an image anyway.
+        required: false
+        type: string
+        default: ''
       timeout:
         description: 'Minutes the scan of one directory may take'
         required: false
@@ -136,8 +156,11 @@ env:
   GOVULNCHECK_VERSION: 'v1.9.0'
 
 jobs:
+  # The scan on a runner that installs its own toolchain: a GitHub-hosted image, where
+  # setup-beam and friends work. `container: ''` (the default) selects this job.
   advisories:
     name: ${{ inputs.ecosystem }} in ${{ matrix.directory }}
+    if: inputs.container == ''
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
     strategy:
@@ -145,11 +168,11 @@ jobs:
       fail-fast: false
       matrix:
         directory: ${{ fromJSON(inputs.working-directories) }}
-    steps:
+    steps: &advisories_steps
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Erlang and rebar3
-        if: inputs.ecosystem == 'erlang'
+        if: inputs.container == '' && inputs.ecosystem == 'erlang'
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ inputs.otp-version }}
@@ -157,7 +180,7 @@ jobs:
           version-type: strict
 
       - name: Elixir and OTP
-        if: inputs.ecosystem == 'elixir'
+        if: inputs.container == '' && inputs.ecosystem == 'elixir'
         uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ inputs.otp-version }}
@@ -165,18 +188,18 @@ jobs:
           version-type: strict
 
       - name: Go
-        if: inputs.ecosystem == 'go'
+        if: inputs.container == '' && inputs.ecosystem == 'go'
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: ${{ matrix.directory }}/go.mod
           cache: false
 
       - name: govulncheck
-        if: inputs.ecosystem == 'go'
+        if: inputs.container == '' && inputs.ecosystem == 'go'
         run: go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
 
       - name: Rust
-        if: inputs.ecosystem == 'rust'
+        if: inputs.container == '' && inputs.ecosystem == 'rust'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           # The toolchain is the action's ref by default, and a SHA names no
@@ -184,7 +207,7 @@ jobs:
           toolchain: stable
 
       - name: cargo audit, checked against this repository's digest
-        if: inputs.ecosystem == 'rust'
+        if: inputs.container == '' && inputs.ecosystem == 'rust'
         run: |
           set -euo pipefail
           url="https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/cargo-audit-x86_64-unknown-linux-gnu-v${CARGO_AUDIT_VERSION}.tgz"
@@ -195,13 +218,13 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Node
-        if: inputs.ecosystem == 'node'
+        if: inputs.container == '' && inputs.ecosystem == 'node'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ inputs.node-version }}
 
       - name: PHP and composer
-        if: inputs.ecosystem == 'php'
+        if: inputs.container == '' && inputs.ecosystem == 'php'
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2
         with:
           php-version: ${{ inputs.php-version }}
@@ -209,16 +232,47 @@ jobs:
           coverage: none
 
       - name: Python
-        if: inputs.ecosystem == 'python'
+        if: inputs.container == '' && inputs.ecosystem == 'python'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ inputs.python-version }}
 
       - name: .NET
-        if: inputs.ecosystem == 'csharp'
+        if: inputs.container == '' && inputs.ecosystem == 'csharp'
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: ${{ inputs.dotnet-version }}
+
+      # A caller that supplies an image is saying the toolchain is inside it. Say so here,
+      # with the missing tool's name, rather than let the scan fail later with a message
+      # about a scanner — which reads as a finding about the repository.
+      - name: The image carries the toolchain
+        if: inputs.container != ''
+        env:
+          ECOSYSTEM: ${{ inputs.ecosystem }}
+        run: |
+          set -euo pipefail
+          case "$ECOSYSTEM" in
+            erlang) tools="erl rebar3" ;;
+            elixir) tools="elixir mix" ;;
+            go)     tools="go" ;;
+            rust)   tools="cargo" ;;
+            node)   tools="npm" ;;
+            php)    tools="php composer" ;;
+            python) tools="python3" ;;
+            csharp) tools="dotnet" ;;
+            *) echo "::error::unknown ecosystem $ECOSYSTEM"; exit 2 ;;
+          esac
+          missing=0
+          for tool in $tools; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::$tool is not in the image this job runs in ($ECOSYSTEM): the container input must name one that carries the toolchain"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          python3 --version >/dev/null 2>&1 ||
+            { echo "::error::python3 is not in the image: the check itself is a Python script"; exit 1; }
 
       - name: osv-scanner, checked against this repository's digest
         if: inputs.ecosystem == 'erlang' || inputs.ecosystem == 'elixir'
@@ -1757,3 +1811,25 @@ jobs:
             --working-directory "$GITHUB_WORKSPACE/$DIRECTORY" \
             --waivers "$GITHUB_WORKSPACE/$WAIVERS" \
             --work "$RUNNER_TEMP/dependency_advisories/work"
+
+  # The same scan, run inside an image the caller supplies. This is the shape every other
+  # self-hosted job in this organisation already uses — "the toolchain is the image" — and it
+  # is the only shape that works there: a self-hosted runner sets no ImageOS, so setup-beam
+  # cannot map a target platform and fails before installing anything.
+  #
+  # The steps are the same list, anchored above, so the two paths cannot drift; the toolchain
+  # installs carry `inputs.container == ''` and skip here, and "The image carries the toolchain"
+  # replaces them with an assertion about what the image actually has.
+  advisories-in-container:
+    name: ${{ inputs.ecosystem }} in ${{ matrix.directory }} (container)
+    if: inputs.container != ''
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    timeout-minutes: ${{ inputs.timeout }}
+    container:
+      image: ${{ inputs.container }}
+    strategy:
+      # Every directory's answer, not only the first failure's.
+      fail-fast: false
+      matrix:
+        directory: ${{ fromJSON(inputs.working-directories) }}
+    steps: *advisories_steps
