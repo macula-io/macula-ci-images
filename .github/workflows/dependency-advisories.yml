@@ -138,6 +138,22 @@ on:
         required: false
         type: string
         default: ''
+      container-options:
+        description: >-
+          Options for `docker run` of that image, passed to `container.options`. On a self-hosted
+          runner pass `--user 1000:1000`: without it the container runs as the image's default user,
+          root, whose checkout lands root-owned in the runner's persistent workspace, and the next
+          job on that runner fails at checkout with EACCES.
+        required: false
+        type: string
+        default: ''
+      container-home:
+        description: >-
+          HOME inside the container, set for every step. `/tmp` by default, because the image's own
+          default user may have no writable home and the tools this runs write under HOME.
+        required: false
+        type: string
+        default: '/tmp'
       timeout:
         description: 'Minutes the scan of one directory may take'
         required: false
@@ -171,6 +187,23 @@ jobs:
       matrix:
         directory: ${{ fromJSON(inputs.working-directories) }}
     steps: &advisories_steps
+      # First, before anything writes into the workspace. A container started without an options
+      # user runs as the image's default user, root, and its checkout lands root-owned in a
+      # self-hosted runner's PERSISTENT workspace: the next job on that runner then fails at
+      # checkout with EACCES, a long way from the cause. Refusing here costs one step and names
+      # the fix (--user in container-options). A hosted runner would hide it, since its VM is
+      # thrown away after the job.
+      - name: The container does not run as root
+        if: inputs.container != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid=$(id -u)
+          if [ "$uid" = "0" ]; then
+            echo "::error::This job runs inside the caller's image as root. Its checkout would be root-owned in the runner's workspace and break the next job on that runner. Pass container-options: '--user 1000:1000' (or the runner's own uid) from the calling workflow."
+            exit 1
+          fi
+          echo "running as uid $uid in $HOME"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Erlang and rebar3
@@ -1833,8 +1866,15 @@ jobs:
     if: inputs.container != ''
     runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: ${{ inputs.timeout }}
+    # HOME for every step in here: the image's default user may have no writable home, and the
+    # tools this runs write under it. See container-home.
+    env:
+      HOME: ${{ inputs.container-home }}
     container:
       image: ${{ inputs.container }}
+      # Empty by default; a self-hosted caller passes `--user <uid>:<gid>` so the workspace this
+      # job writes is not root-owned. See container-options.
+      options: ${{ inputs.container-options }}
     strategy:
       # Every directory's answer, not only the first failure's.
       fail-fast: false

@@ -76,4 +76,8 @@ jobs:
       ecosystem: python
       working-directories: '["scripts/fixtures/dependency_advisories/python"]'
       runs-on: '["ubuntu-latest"]'
+      # Proves the option is applied: 1001 is the uid a GitHub-hosted runner uses, so the job runs
+      # as that user and never as root. A self-hosted caller passes 1000:1000 instead, for the same
+      # reason (see container-options): a root checkout breaks the next job on that runner.
+      container-options: '--user 1001:1001'
       container: python:3.13@sha256:6a9220edda062e9223ea0784740a535987299420b96fbfd520b89bbd3e772485
