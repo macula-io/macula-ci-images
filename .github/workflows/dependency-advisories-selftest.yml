@@ -54,3 +54,30 @@ jobs:
     with:
       ecosystem: python
       working-directories: '["scripts/fixtures/dependency_advisories/python"]'
+
+  # The container path, which is the shape a self-hosted caller has to use (a self-hosted
+  # runner sets no ImageOS, so the setup-* steps above cannot run there). A stock python
+  # image is enough to prove it for the python fixture: the check IS a Python script, so the
+  # image needs python3 and the scanners this workflow installs itself. Nothing here is
+  # macula-specific (full, not -slim: it carries git and curl), which is the point — if this job is green, `container` works, and a
+  # caller can pin a ci-otp or ci-pq image for the ecosystem it actually scans.
+  #
+  # ON A HOSTED RUNNER, DELIBERATELY. This repository is public, and a public repository must
+  # never point a job at a self-hosted runner: anyone's fork of it could open a pull request
+  # and run code on the operator's machine. It would not have run anyway — the org's runner
+  # group refuses public repositories — so the proof lives where it may: hosted runners are
+  # free for a public repository, and `container:` runs on them. What is proven is still the
+  # shape, not the runner: the same image, the same steps, the same refusals.
+  wired-in-container:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dependency-advisories.yml
+    with:
+      ecosystem: python
+      working-directories: '["scripts/fixtures/dependency_advisories/python"]'
+      runs-on: '["ubuntu-latest"]'
+      # Proves the option is applied: 1001 is the uid a GitHub-hosted runner uses, so the job runs
+      # as that user and never as root. A self-hosted caller passes 1000:1000 instead, for the same
+      # reason (see container-options): a root checkout breaks the next job on that runner.
+      container-options: '--user 1001:1001'
+      container: python:3.13@sha256:6a9220edda062e9223ea0784740a535987299420b96fbfd520b89bbd3e772485

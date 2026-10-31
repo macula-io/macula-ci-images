@@ -47,6 +47,10 @@ ARG RUST_VERSION
 ARG RUSTUP_VERSION
 ARG RUSTUP_INIT_SHA256
 
+# python3 is not decoration: dependency-advisories.yml's check IS a Python script, and a
+# job that runs it inside this image (the only way it can run on a self-hosted runner, which
+# sets no ImageOS for setup-beam) has no other python. venv and pip are for the ecosystem that
+# resolves a project's requirements before auditing them.
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
       build-essential \
       git \
@@ -56,6 +60,9 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
       libssl-dev \
       openssl \
       cmake \
+      python3 \
+      python3-venv \
+      python3-pip \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && rm -rf /var/log/apt/* /var/log/dpkg.log /var/log/alternatives.log \
               /var/cache/ldconfig/aux-cache /var/cache/debconf/*-old
