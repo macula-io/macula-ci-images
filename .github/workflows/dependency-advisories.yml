@@ -21,10 +21,12 @@
 # self-hosted runner sets no ImageOS, which setup-beam reads to choose a prebuilt
 # toolchain, so the install steps fail there before they start; an image carries the
 # toolchain instead, and "the toolchain is the image" is how every other self-hosted job
-# in this organisation already works. With `container` set, the setup-* steps are skipped
-# and the job asserts the image has what the ecosystem needs. Pin the image by digest,
-# and use the same image the repository's build uses, so the scan reads the lock the
-# release resolves: ghcr.io/macula-io/macula-ci-otp for erlang, macula-ci-pq for elixir.
+# in this organisation already works. With `container` set, the toolchain INSTALL steps are
+# skipped and the job asserts the image has what the ecosystem needs; the scanners this file
+# pins itself (govulncheck, cargo-audit, osv-scanner) are installed either way, because they
+# are ours and their versions are pinned here. Pin the image by digest, and use the same image
+# the repository's build uses, so the scan reads the lock the release resolves:
+# ghcr.io/macula-io/macula-ci-otp for erlang, macula-ci-pq for elixir.
 #
 # Pin the call by FULL COMMIT SHA, as with release-guard.yml. Two more things make
 # it a gate rather than a job that exists, and macula-codebase-checks reports a
@@ -194,8 +196,14 @@ jobs:
           go-version-file: ${{ matrix.directory }}/go.mod
           cache: false
 
+      # govulncheck and cargo audit are SCANNERS, not toolchains: they install into the
+      # job's own temp path from a pinned version in this file, so they run in container
+      # mode too. Guarding them on `inputs.container == ''` would leave a go or rust caller
+      # passing the toolchain assertion (which only asks for `go` or `cargo`) and then
+      # failing at the scan with a message about a missing scanner — the misreading the
+      # assertion exists to prevent.
       - name: govulncheck
-        if: inputs.container == '' && inputs.ecosystem == 'go'
+        if: inputs.ecosystem == 'go'
         run: go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
 
       - name: Rust
@@ -207,7 +215,7 @@ jobs:
           toolchain: stable
 
       - name: cargo audit, checked against this repository's digest
-        if: inputs.container == '' && inputs.ecosystem == 'rust'
+        if: inputs.ecosystem == 'rust'
         run: |
           set -euo pipefail
           url="https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv${CARGO_AUDIT_VERSION}/cargo-audit-x86_64-unknown-linux-gnu-v${CARGO_AUDIT_VERSION}.tgz"
