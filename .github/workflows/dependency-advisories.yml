@@ -140,10 +140,12 @@ on:
         default: ''
       container-options:
         description: >-
-          Options for `docker run` of that image, passed to `container.options`. On a self-hosted
-          runner pass `--user 1000:1000`: without it the container runs as the image's default user,
-          root, whose checkout lands root-owned in the runner's persistent workspace, and the next
-          job on that runner fails at checkout with EACCES.
+          Options for `docker run` of that image, passed to `container.options`. REQUIRED whenever
+          `container` is set: the job's first step refuses uid 0, on every runner, because a root
+          checkout lands root-owned in the runner's workspace and the next job on a self-hosted
+          runner then fails at checkout with EACCES, a long way from the cause. Pass
+          `--user <uid>:<gid>`: a self-hosted caller passes its own user (1000:1000 for this
+          organisation's boxes), a GitHub-hosted caller passes 1001:1001.
         required: false
         type: string
         default: ''
@@ -188,11 +190,14 @@ jobs:
         directory: ${{ fromJSON(inputs.working-directories) }}
     steps: &advisories_steps
       # First, before anything writes into the workspace. A container started without an options
-      # user runs as the image's default user, root, and its checkout lands root-owned in a
-      # self-hosted runner's PERSISTENT workspace: the next job on that runner then fails at
-      # checkout with EACCES, a long way from the cause. Refusing here costs one step and names
-      # the fix (--user in container-options). A hosted runner would hide it, since its VM is
-      # thrown away after the job.
+      # user runs as the image's default user, root, and its checkout lands root-owned in the
+      # runner's workspace: on a self-hosted runner, whose workspace is persistent, the next job
+      # there then fails at checkout with EACCES, a long way from the cause.
+      #
+      # Refused on EVERY runner, hosted ones included, rather than exempting them: one rule that
+      # holds on both shapes, and a self-test that passes only because this step saw a non-zero
+      # uid, which is what proves `container-options` was applied rather than assumed. That makes
+      # the option required wherever `container` is set, and its description says so.
       - name: The container does not run as root
         if: inputs.container != ''
         shell: bash
@@ -200,7 +205,7 @@ jobs:
           set -euo pipefail
           uid=$(id -u)
           if [ "$uid" = "0" ]; then
-            echo "::error::This job runs inside the caller's image as root. Its checkout would be root-owned in the runner's workspace and break the next job on that runner. Pass container-options: '--user 1000:1000' (or the runner's own uid) from the calling workflow."
+            echo "::error::This job runs inside the caller's image as root. Its checkout would be root-owned in the runner's workspace and break the next job on that runner. Pass container-options: '--user <uid>:<gid>' from the calling workflow (1000:1000 on this organisation's self-hosted boxes, 1001:1001 on a GitHub-hosted runner)."
             exit 1
           fi
           echo "running as uid $uid in $HOME"

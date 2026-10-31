@@ -22,6 +22,11 @@ on:
       - 'scripts/pip-audit-requirements.txt'
       - 'scripts/fixtures/dependency_advisories/**'
   workflow_dispatch:
+    inputs:
+      prove-root-refusal:
+        description: 'Run the job that MUST go red: the container path with no --user, proving the refusal step.'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,3 +86,24 @@ jobs:
       # reason (see container-options): a root checkout breaks the next job on that runner.
       container-options: '--user 1001:1001'
       container: python:3.13@sha256:6a9220edda062e9223ea0784740a535987299420b96fbfd520b89bbd3e772485
+
+  # OPT-IN, AND RED ON PURPOSE. The refusal above is the one step whose FAILING is the product,
+  # and a calling job cannot require a reusable workflow's job to fail (`continue-on-error` is
+  # not offered on a `uses:` job), so it cannot be asserted on every push — a permanently red
+  # suite would say nothing about the next commit. Dispatch this workflow with
+  # `prove-root-refusal: true` instead: then exactly this job must be the red one, failing in
+  # `The container does not run as root` with the message naming `container-options`. That is
+  # the proof, and every ordinary push skips the job.
+  root-refusal-proven:
+    name: the root refusal, expected to FAIL
+    if: inputs.prove-root-refusal
+    permissions:
+      contents: read
+    uses: ./.github/workflows/dependency-advisories.yml
+    with:
+      ecosystem: python
+      working-directories: '["scripts/fixtures/dependency_advisories/python"]'
+      runs-on: '["ubuntu-latest"]'
+      container: python:3.13@sha256:6a9220edda062e9223ea0784740a535987299420b96fbfd520b89bbd3e772485
+      # container-options deliberately absent: the image's default user is root, so the job must
+      # refuse. Do not add it to make this green — that is what `wired-in-container` above is for.
