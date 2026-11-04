@@ -45,8 +45,10 @@ leftovers() { find "$TMPDIR" -mindepth 1 -maxdepth 1 | wc -l; }
 SHA=$(repo pass '      - uses: actions/checkout@v4
       - name: who
         run: echo "uid=$(id -u) job=$FROM_JOB"
-      - run: test -f .github/workflows/lint.yml && echo "tree=present"')
+      - run: test -f .github/workflows/lint.yml && echo "tree=present"
+      - run: echo "pids.max=$(cat /sys/fs/cgroup/pids.max)"')
 OUT=$("$GATE" "$WORK/pass" "$SHA" 2>&1) || fail "a passing job failed: $OUT"
+grep -qx "pids.max=4096" <<<"$OUT" || fail "the container did not get the gate's pids limit (4096): $OUT"
 grep -q "uid=0 job=job-level" <<<"$OUT" || fail "steps did not run as root with the job env: $OUT"
 grep -qx "tree=present" <<<"$OUT" || fail "the commit was not the working directory: $OUT"
 grep -q "skipped: uses: actions/checkout@v4" <<<"$OUT" || fail "a uses: step was not reported as skipped: $OUT"
@@ -614,5 +616,95 @@ grep -qF "names no owner" <<<"$OUT" || fail "an ownerless slot file was not refu
 OUT=$(GATE_SLOT_FILE="$WORK/slot" GATE_SLOT_OWNER=Pluto GATE_DRY_RUN=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
     || fail "the slot's owner was refused: $OUT"
 grep -qF "gating on a host reserved for Pluto, as Pluto" <<<"$OUT" || fail "the owner's gate did not say it runs on a reserved host: $OUT"
+
+# 31. Every container gets an explicit --pids-limit, whichever engine runs it:
+#     rootless podman's docker compat API defaults to pids.max=1. A fake engine,
+#     installed once as `docker' and once as `podman', records its arguments
+#     and starts nothing; GATE_PIDS_LIMIT overrides the default, and a value
+#     that is not a positive whole number is refused before anything starts.
+fake_engine() {
+    mkdir -p "$WORK/fake-$1"
+    cat > "$WORK/fake-$1/$1" <<'SH'
+#!/usr/bin/env bash
+# Records each call; starts nothing. FAKE_LOCK=1 makes the workspace
+# unremovable for the caller's user, as a container's root-owned files are.
+echo "$*" >> "$FAKE_ENGINE_LOG"
+case "$1" in
+    run)
+        if [ "${FAKE_LOCK:-}" = 1 ]; then
+            for a in "$@"; do
+                case "$a" in *:/w:Z) src="${a%%:/w:Z}";; esac
+            done
+            mkdir -p "$src/locked" && touch "$src/locked/root-owned" && chmod 500 "$src/locked"
+        fi
+        exit 0;;
+    unshare) exit 1;;   # the subordinate-uid escape hatch fails too
+    ps)                 # FAKE_PS=survivor: the container outlived rm -f;
+                        # FAKE_PS=down: the engine cannot be asked at all
+        case "${FAKE_PS:-}" in
+            survivor) echo 0123456789ab;;
+            down) exit 125;;
+        esac
+        exit 0;;
+    *) exit 0;;
+esac
+SH
+    chmod +x "$WORK/fake-$1/$1"
+}
+fake_engine docker
+fake_engine podman
+export FAKE_ENGINE_LOG="$WORK/engine.log"
+for engine in docker podman; do
+    : > "$FAKE_ENGINE_LOG"
+    OUT=$(PATH="$WORK/fake-$engine:$PATH" ENGINE=$engine "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+        || fail "the gate failed under a fake $engine: $OUT"
+    grep -E '^run .* --pids-limit=4096( |$)' "$FAKE_ENGINE_LOG" >/dev/null \
+        || fail "ENGINE=$engine ran a container without --pids-limit=4096: $(cat "$FAKE_ENGINE_LOG")"
+done
+: > "$FAKE_ENGINE_LOG"
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker GATE_PIDS_LIMIT=1024 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "GATE_PIDS_LIMIT=1024 failed: $OUT"
+grep -E '^run .* --pids-limit=1024( |$)' "$FAKE_ENGINE_LOG" >/dev/null \
+    || fail "GATE_PIDS_LIMIT=1024 did not reach the container: $(cat "$FAKE_ENGINE_LOG")"
+for bad in "" 0 -1 4k; do
+    : > "$FAKE_ENGINE_LOG"
+    OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker GATE_PIDS_LIMIT="$bad" "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+        && fail "GATE_PIDS_LIMIT='$bad' was accepted: $OUT"
+    grep -qF "REFUSED: GATE_PIDS_LIMIT='$bad' is not a positive whole number" <<<"$OUT" \
+        || fail "GATE_PIDS_LIMIT='$bad' was not refused by name: $OUT"
+    grep -q '^run ' "$FAKE_ENGINE_LOG" && fail "GATE_PIDS_LIMIT='$bad' started a container"
+done
+[ "$(leftovers)" -eq 0 ] || fail "a fake-engine run left a workspace behind"
+
+# 32. A workspace the exit trap cannot remove is reported as LEFTOVER, naming
+#     it and the command that removes it, and the job's status stands (the
+#     job here passed). Before this, the trap ended in `|| true' and leaked
+#     workspaces piled up in TMPDIR unseen.
+: > "$FAKE_ENGINE_LOG"
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker FAKE_LOCK=1 "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "a passing job turned into a failure because its workspace could not be removed: $OUT"
+LEFT=$(find "$TMPDIR" -mindepth 1 -maxdepth 1)
+[ -n "$LEFT" ] || fail "the locked workspace was removed after all, so this case proves nothing"
+grep -qF "LEFTOVER: workspace $LEFT was not removed; remove it with: docker unshare rm -rf $LEFT" <<<"$OUT" \
+    || fail "an unremovable workspace was not reported: $OUT"
+chmod -R u+w "$LEFT" && rm -rf "$LEFT"
+[ "$(leftovers)" -eq 0 ] || fail "case 32 could not clean up its own locked workspace"
+grep -q "LEFTOVER.*container" <<<"$OUT" && fail "a removed container was reported as left over: $OUT"
+
+# 33. A container that outlives rm -f is reported as LEFTOVER with the command
+#     that removes it; when the engine cannot even be asked (ps fails), the
+#     trap says LEFTOVER-UNKNOWN rather than reading the failure as "nothing
+#     left". Neither changes the job's status.
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker FAKE_PS=survivor "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "a surviving container turned a passing job into a failure: $OUT"
+grep -qE "^LEFTOVER: container ci-gate-[A-Za-z0-9]+ was not removed; remove it with: docker rm -f ci-gate-[A-Za-z0-9]+$" <<<"$OUT" \
+    || fail "a surviving container was not reported: $OUT"
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker FAKE_PS=down "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "an unreachable engine at cleanup turned a passing job into a failure: $OUT"
+grep -qE "^LEFTOVER-UNKNOWN: could not check whether container ci-gate-[A-Za-z0-9]+ was removed \(docker ps failed\); check with: docker ps -a --filter name=ci-gate-[A-Za-z0-9]+$" <<<"$OUT" \
+    || fail "a failed ps was read as nothing left: $OUT"
+grep -q "^LEFTOVER: container" <<<"$OUT" && fail "a failed ps was reported as a known survivor: $OUT"
+unset FAKE_ENGINE_LOG
+[ "$(leftovers)" -eq 0 ] || fail "case 33 left a workspace behind"
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"
