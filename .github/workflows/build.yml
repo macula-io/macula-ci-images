@@ -67,6 +67,7 @@ on:
       # build no base image either.
       - '.github/workflows/c4-model.yml'
       - '.github/workflows/c4-model-selftest.yml'
+      - '.github/workflows/c4-design-gate.yml'
       - 'scripts/c4_model.sh'
       - 'scripts/embed_c4_model.sh'
       - 'scripts/test_c4_model.sh'
