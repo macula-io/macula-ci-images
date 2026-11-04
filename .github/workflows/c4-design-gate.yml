@@ -1,0 +1,208 @@
+# A service's Design gate fails a check until its C4 Context and Container model exists.
+#
+# This exists so a new service cannot pass gate:design, and then get its first code,
+# without the model the code is meant to follow (macula-sponsors#113). On
+# mcl-tenders the model arrived nineteen minutes after the first code commit and
+# covered one app of five, and gate:design had been applied without anyone noticing.
+#
+# The owner applies gate:design to a plan issue. This workflow answers that label:
+# it reads the repository's default branch and, when the Context or the Container
+# diagram is missing or no README shows it, comments on the issue naming what is
+# missing, and the job fails. It never takes the label away: the label is the owner's
+# act, and the failing check beside it is the record that the model was not there
+# (decided 2026-11-04).
+#
+# CALL IT, from the service repository (the mcl_service template ships this):
+#
+#   on:
+#     issues:
+#       types: [labeled]
+#   jobs:
+#     c4-design-gate:
+#       permissions: { contents: read, issues: write }
+#       uses: macula-io/macula-ci-images/.github/workflows/c4-design-gate.yml@<full sha>
+#
+# Pin it by FULL COMMIT SHA, as every shared call in the fleet is. Any other label
+# skips the job.
+#
+# WHAT IT CHECKS is scripts/c4_model.sh in its --design mode: a file in assets/ whose
+# name holds `context`, and one whose name holds `container`, each shown by the root
+# README.md or architecture/README.md. Components come with the code, and
+# c4-model.yml holds them from the first pull request on.
+#
+# THE CHECK LIVES IN THIS FILE, as in c4-model.yml: a reusable workflow runs in the
+# CALLER's repository. scripts/embed_c4_model.sh writes the same block into both
+# workflows, and scripts/test_c4_model.sh fails when either copy is not the script.
+
+name: c4 design gate
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runs-on value; default ["ubuntu-latest"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      working-directory:
+        description: 'The repository root holding assets/ and the READMEs; default the root'
+        required: false
+        type: string
+        default: '.'
+
+permissions:
+  contents: read
+
+jobs:
+  c4-design-gate:
+    # Only the Design gate label, when called from an issue; any other caller (the
+    # self-test) runs the check alone.
+    if: github.event_name != 'issues' || github.event.label.name == 'gate:design'
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      # On an issues event the checkout is the default branch: the model the code will
+      # follow, not a branch someone is drawing it on.
+      - uses: actions/checkout@v4
+
+      - name: Write the check
+        run: |
+          mkdir -p "$RUNNER_TEMP/c4_model"
+          cat > "$RUNNER_TEMP/c4_model/c4_model.sh" <<'C4_MODEL_SCRIPT'
+          #!/usr/bin/env bash
+          # A C4 Context and a C4 Component diagram, in assets/, shown by a README, and a
+          # front page a reader can reach them from.
+          #
+          # Usage: c4_model.sh [--design] [ROOT]
+          #
+          # ROOT is a repository that builds an executable, which this does not decide:
+          # macula-codebase-checks' c4_model class does, from the repository itself, and
+          # holds the whole rule (macula-codebase-checks#10). This is the gate that keeps
+          # the two files there once the class has drawn them, so the next commit cannot
+          # drop a diagram or stop showing it.
+          #
+          # A diagram is a file in assets/ whose name holds `context` or `component` (the
+          # names are not fixed: mcl-fovea has c4-context.svg and c4-components.svg). It
+          # is shown when a README a reader reaches from the front page links it by file
+          # name: the root README.md, or the architecture/README.md a service keeps its
+          # whole model in.
+          #
+          # Two more readings, from macula-codebase-checks#26:
+          #
+          #   the model is REACHED      when the repository keeps an architecture/README.md,
+          #                             the front page README.md must link it. A model a
+          #                             reader landing on the repository cannot find is a
+          #                             diagram nobody reads.
+          #   one logo                  the README's header (everything above the first
+          #                             `## ` heading) carries at most one <picture> block.
+          #                             Two marks above the fold is a page that copied two
+          #                             templates.
+          #
+          # A SERVICE, a repository that keeps architecture/README.md (its whole model), also
+          # carries a Container diagram, `container` in the name, shown the same way: the
+          # model a service is planned from is its Context and its Containers
+          # (macula-sponsors#113).
+          #
+          # --design is what gate:design asks of the default branch before any code
+          # (c4-design-gate.yml): the Context and Container diagrams, each shown by a README.
+          # Components come with the code, and the front-page and logo readings with the
+          # README the code brings, so neither is asked here.
+          #
+          # Exit 0 when all of it holds, 1 naming what is missing.
+          set -uo pipefail
+
+          DESIGN=0
+          [ "${1:-}" = "--design" ] && { DESIGN=1; shift; }
+          ROOT="${1:-.}"
+          DOCS=(README.md architecture/README.md)
+          failed=0
+
+          shown() {
+            local name="$1" doc
+            for doc in "${DOCS[@]}"; do
+              [ -f "$ROOT/$doc" ] || continue
+              grep -qF "$name" "$ROOT/$doc" && return 0
+            done
+            return 1
+          }
+
+          KINDS=(context component)
+          [ -f "$ROOT/architecture/README.md" ] && KINDS+=(container)
+          [ "$DESIGN" -eq 1 ] && KINDS=(context container)
+
+          # The model is reached from the front page: a markdown link TARGET that is the
+          # architecture README or its directory. The link text is free, and so is a
+          # `./`, a trailing `#anchor` or a `?query`.
+          if [ "$DESIGN" -eq 0 ] && [ -f "$ROOT/architecture/README.md" ] \
+             && ! grep -qE '\]\([[:space:]]*(\./)?architecture(/README\.md)?/?([#?][^)]*)?[[:space:]]*\)' \
+                  "$ROOT/README.md" 2>/dev/null; then
+            echo "c4_model: README.md does not link architecture/README.md: a reader landing on" \
+                 "the repository cannot reach its C4 model" >&2
+            failed=1
+          fi
+
+          # The header is what a visitor sees before the first section, and it carries one
+          # mark. A <picture> below the first `## ` heading is a screenshot, not a logo.
+          header="$(awk '/^## /{exit} {print}' "$ROOT/README.md" 2>/dev/null)"
+          pictures="$(grep -ci '<picture' <<< "$header" || true)"
+          pictures="${pictures:-0}"
+          if [ "$DESIGN" -eq 0 ] && [ "$pictures" -gt 1 ]; then
+            echo "c4_model: README.md shows ${pictures} <picture> blocks in its header: one logo," \
+                 "so the page carries a single mark above the fold" >&2
+            failed=1
+          fi
+
+          for kind in "${KINDS[@]}"; do
+            svgs=()
+            while IFS= read -r svg; do
+              [ -n "$svg" ] && svgs+=("$svg")
+            done < <(find "$ROOT/assets" -maxdepth 1 -iname "*${kind}*.svg" 2>/dev/null | sort)
+            if [ "${#svgs[@]}" -eq 0 ]; then
+              case "$kind" in
+                container) why="a service is planned from its Context and Container model (macula-sponsors#113)" ;;
+                *)         why="this repository builds an executable, and its C4 ${kind} diagram is what shows what it talks to and what it is made of" ;;
+              esac
+              echo "c4_model: no assets/*${kind}*.svg: ${why}" >&2
+              failed=1
+              continue
+            fi
+            # EVERY one, not the first: a second diagram nobody links is a diagram a
+            # reader cannot reach, and the sweep's class asks for the same.
+            for svg in "${svgs[@]}"; do
+              name="$(basename "$svg")"
+              if ! shown "$name"; then
+                echo "c4_model: ${svg#"$ROOT"/} is not shown by ${DOCS[*]}: a diagram nobody links is not a model" >&2
+                failed=1
+              fi
+            done
+          done
+
+
+          exit "$failed"
+          C4_MODEL_SCRIPT
+
+      - name: A C4 Context and Container model on the default branch
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -o pipefail
+          bash "$RUNNER_TEMP/c4_model/c4_model.sh" --design . 2>&1 | tee "$RUNNER_TEMP/c4_model/design.txt"
+
+      - name: Say on the issue what the model lacks
+        if: failure() && github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$RUNNER_TEMP/c4_model/comment.md"
+          {
+            printf 'gate:design was applied, and the default branch has no C4 Context and Container model for this service yet:\n\n'
+            printf '```text\n'
+            cat "$RUNNER_TEMP/c4_model/design.txt"
+            printf '```\n\n'
+            printf 'Draw them as SVGs in `assets/` (a name holding `context`, one holding `container`), shown by `README.md` or `architecture/README.md`, before the first code. The label stays; this check stays red until the model is on the default branch. Re-run: %s\n' "$RUN_URL"
+          } > "$body"
+          gh issue comment "$ISSUE" -R "$REPO" -F "$body"

@@ -481,6 +481,7 @@ files the work, and leaves this gate behind. The gate holds two things:
 |---|---|
 | a context diagram | a file in `assets/` whose name holds `context` (the rest is free, case does not matter: `c4-context.svg`, `sys-context.svg`) |
 | a component diagram | the same, for `component` |
+| a container diagram, in a service | the same, for `container`, when the repository keeps `architecture/README.md`: a service is planned from its Context and Container model (macula-sponsors#113) |
 | that each is shown | the file's own name appears in `README.md` or in `architecture/README.md`, which is where a service keeps its whole model. A diagram nobody links is not a model |
 
 ```yaml
@@ -498,6 +499,31 @@ CSS custom properties, which `rsvg-convert` renders black. The script is
 `scripts/c4_model.sh`, embedded by `scripts/embed_c4_model.sh` and tested as embedded
 by `scripts/test_c4_model.sh`; `release-guard-selftest.yml`'s sibling
 `c4-model-selftest.yml` also calls the workflow once, on a fixture repository.
+
+### The Design gate: `c4-design-gate.yml`
+
+This exists so a new service cannot pass `gate:design`, and then get its first code,
+without the model the code is meant to follow (macula-sponsors#113). A service
+repository calls it on `issues: labeled`. When the label is `gate:design`, it reads the
+default branch for a Context and a Container diagram, each shown by a README (the
+same check, in its `--design` mode; components come with the code). If one is
+missing, it comments on the issue naming what is missing, and the job fails. It never
+removes the label: applying it is the owner's act, and the failing check beside it is
+the record that the model was not there.
+
+```yaml
+on:
+  issues:
+    types: [labeled]
+jobs:
+  c4-design-gate:
+    permissions: { contents: read, issues: write }
+    uses: macula-io/macula-ci-images/.github/workflows/c4-design-gate.yml@<full sha>
+```
+
+Any other label skips the job. `scripts/embed_c4_model.sh` writes the same block into
+both workflows, `scripts/test_c4_model.sh` fails when either copy is not the script, and
+`c4-model-selftest.yml` calls this workflow too, on the fixture.
 
 ## Architecture
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Write the C4 model check into the workflow that runs it: scripts/c4_model.sh
-# into .github/workflows/c4-model.yml.
+# Write the C4 model check into the workflows that run it: scripts/c4_model.sh
+# into .github/workflows/c4-model.yml and .github/workflows/c4-design-gate.yml,
+# which runs the same check in its --design mode (macula-sponsors#113).
 #
 # A reusable workflow runs in the CALLER's repository, so a step cannot run a
 # script from this one: the path is not there. The check therefore travels
@@ -15,9 +16,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 SOURCE="$HERE/c4_model.sh"
-WORKFLOW="$ROOT/.github/workflows/c4-model.yml"
 MARK="C4_MODEL_SCRIPT"
 
+embed() {
+WORKFLOW="$1"
 tmp="$(mktemp)"
 if ! awk -v src="$SOURCE" -v open_mark="<<'$MARK'" -v close_mark="$MARK" '
   BEGIN {
@@ -48,8 +50,13 @@ if ! awk -v src="$SOURCE" -v open_mark="<<'$MARK'" -v close_mark="$MARK" '
   }
 ' "$WORKFLOW" > "$tmp"; then
   rm -f "$tmp"
-  exit 1
+  return 1
 fi
 chmod --reference="$WORKFLOW" "$tmp"
 mv "$tmp" "$WORKFLOW"
 echo "embed: wrote c4_model.sh into $WORKFLOW"
+}
+
+for workflow in c4-model.yml c4-design-gate.yml; do
+  embed "$ROOT/.github/workflows/$workflow" || exit 1
+done

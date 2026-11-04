@@ -2,7 +2,7 @@
 # A C4 Context and a C4 Component diagram, in assets/, shown by a README, and a
 # front page a reader can reach them from.
 #
-# Usage: c4_model.sh [ROOT]
+# Usage: c4_model.sh [--design] [ROOT]
 #
 # ROOT is a repository that builds an executable, which this does not decide:
 # macula-codebase-checks' c4_model class does, from the repository itself, and
@@ -27,9 +27,21 @@
 #                             Two marks above the fold is a page that copied two
 #                             templates.
 #
+# A SERVICE, a repository that keeps architecture/README.md (its whole model), also
+# carries a Container diagram, `container` in the name, shown the same way: the
+# model a service is planned from is its Context and its Containers
+# (macula-sponsors#113).
+#
+# --design is what gate:design asks of the default branch before any code
+# (c4-design-gate.yml): the Context and Container diagrams, each shown by a README.
+# Components come with the code, and the front-page and logo readings with the
+# README the code brings, so neither is asked here.
+#
 # Exit 0 when all of it holds, 1 naming what is missing.
 set -uo pipefail
 
+DESIGN=0
+[ "${1:-}" = "--design" ] && { DESIGN=1; shift; }
 ROOT="${1:-.}"
 DOCS=(README.md architecture/README.md)
 failed=0
@@ -43,10 +55,14 @@ shown() {
   return 1
 }
 
+KINDS=(context component)
+[ -f "$ROOT/architecture/README.md" ] && KINDS+=(container)
+[ "$DESIGN" -eq 1 ] && KINDS=(context container)
+
 # The model is reached from the front page: a markdown link TARGET that is the
 # architecture README or its directory. The link text is free, and so is a
 # `./`, a trailing `#anchor` or a `?query`.
-if [ -f "$ROOT/architecture/README.md" ] \
+if [ "$DESIGN" -eq 0 ] && [ -f "$ROOT/architecture/README.md" ] \
    && ! grep -qE '\]\([[:space:]]*(\./)?architecture(/README\.md)?/?([#?][^)]*)?[[:space:]]*\)' \
         "$ROOT/README.md" 2>/dev/null; then
   echo "c4_model: README.md does not link architecture/README.md: a reader landing on" \
@@ -59,20 +75,23 @@ fi
 header="$(awk '/^## /{exit} {print}' "$ROOT/README.md" 2>/dev/null)"
 pictures="$(grep -ci '<picture' <<< "$header" || true)"
 pictures="${pictures:-0}"
-if [ "$pictures" -gt 1 ]; then
+if [ "$DESIGN" -eq 0 ] && [ "$pictures" -gt 1 ]; then
   echo "c4_model: README.md shows ${pictures} <picture> blocks in its header: one logo," \
        "so the page carries a single mark above the fold" >&2
   failed=1
 fi
 
-for kind in context component; do
+for kind in "${KINDS[@]}"; do
   svgs=()
   while IFS= read -r svg; do
     [ -n "$svg" ] && svgs+=("$svg")
   done < <(find "$ROOT/assets" -maxdepth 1 -iname "*${kind}*.svg" 2>/dev/null | sort)
   if [ "${#svgs[@]}" -eq 0 ]; then
-    echo "c4_model: no assets/*${kind}*.svg: this repository builds an executable," \
-         "and its C4 ${kind} diagram is what shows what it talks to and what it is made of" >&2
+    case "$kind" in
+      container) why="a service is planned from its Context and Container model (macula-sponsors#113)" ;;
+      *)         why="this repository builds an executable, and its C4 ${kind} diagram is what shows what it talks to and what it is made of" ;;
+    esac
+    echo "c4_model: no assets/*${kind}*.svg: ${why}" >&2
     failed=1
     continue
   fi

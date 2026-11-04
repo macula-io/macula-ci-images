@@ -17,6 +17,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 SOURCE="$HERE/c4_model.sh"
 WORKFLOW="$ROOT/.github/workflows/c4-model.yml"
+DESIGN_WORKFLOW="$ROOT/.github/workflows/c4-design-gate.yml"
 VERBOSE=0
 [ "${1:-}" = "--verbose" ] && VERBOSE=1
 
@@ -57,20 +58,37 @@ check() {
   fi
 }
 
-awk -v open_mark="<<'C4_MODEL_SCRIPT'" -v close_mark="C4_MODEL_SCRIPT" '
-  index($0, open_mark) && index($0, "cat > ") {
-    pad = substr($0, 1, index($0, "cat") - 1)
-    inside = 1
-    next
-  }
-  inside && $0 == pad close_mark { inside = 0; next }
-  inside {
-    if (substr($0, 1, length(pad)) == pad) print substr($0, length(pad) + 1)
-    else print
-  }
-' "$WORKFLOW" > "$CHECK"
+# extract <workflow>: the check as that workflow embeds it, by its markers.
+extract() {
+  awk -v open_mark="<<'C4_MODEL_SCRIPT'" -v close_mark="C4_MODEL_SCRIPT" '
+    index($0, open_mark) && index($0, "cat > ") {
+      pad = substr($0, 1, index($0, "cat") - 1)
+      inside = 1
+      next
+    }
+    inside && $0 == pad close_mark { inside = 0; next }
+    inside {
+      if (substr($0, 1, length(pad)) == pad) print substr($0, length(pad) + 1)
+      else print
+    }
+  ' "$1"
+}
+extract "$WORKFLOW" > "$CHECK"
+DESIGN_CHECK="$WORK/c4_design_gate.sh"
+extract "$DESIGN_WORKFLOW" > "$DESIGN_CHECK" 2>/dev/null
 
 check "the block in c4-model.yml is the script" cmp -s "$SOURCE" "$CHECK"
+# The design gate runs the same check in its --design mode (macula-sponsors#113), so
+# the two workflows cannot drift into two rules.
+check "the block in c4-design-gate.yml is the script" cmp -s "$SOURCE" "$DESIGN_CHECK"
+check "c4-design-gate.yml is valid YAML" \
+  python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$DESIGN_WORKFLOW"
+# The owner applies gate:design; the check answers with a comment and a failing
+# job, and never takes the label away (macula-sponsors#113, decided 2026-11-04).
+check "the design gate never removes a label" \
+  bash -c '! grep -qiE "remove-label|removeLabel|/labels/|--remove|DELETE" "$1"' _ "$DESIGN_WORKFLOW"
+check "the design gate comments only on a gate:design label" \
+  grep -qF "github.event.label.name == 'gate:design'" "$DESIGN_WORKFLOW"
 # A parse error after the exit that ends every run is invisible until the day
 # the flow changes, so the script is read whole by the shell before it is run.
 check "c4_model.sh parses" bash -n "$SOURCE"
@@ -78,18 +96,19 @@ check "the block in c4-model.yml parses" bash -n "$CHECK"
 check "c4-model.yml is valid YAML" \
   python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$WORKFLOW"
 
-# service <dir>: the repository mcl-fovea is, with its two diagrams shown by both
-# READMEs and the front page linking the model. Every case starts from it and
-# takes one thing away.
+# service <dir>: the repository mcl-fovea is, with its context, container and
+# component diagrams shown by both READMEs and the front page linking the model.
+# Every case starts from it and takes one thing away.
 service() {
   local dir="$1"
   mkdir -p "$dir/assets"
   printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-context.svg"
   printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-components.svg"
+  printf "<svg xmlns='http://www.w3.org/2000/svg'/>\n" > "$dir/assets/c4-containers.svg"
   printf '# service\n\nThe model is in [architecture/README.md](architecture/README.md).\n\n![context](assets/c4-context.svg)\n' \
     > "$dir/README.md"
   mkdir -p "$dir/architecture"
-  printf '# architecture\n\n![components](assets/c4-components.svg)\n' \
+  printf '# architecture\n\n![containers](assets/c4-containers.svg)\n\n![components](assets/c4-components.svg)\n' \
     > "$dir/architecture/README.md"
 }
 
@@ -218,6 +237,50 @@ printf '# service\n\n%s\n\n[the model](architecture/README.md)\n\n![context](ass
   "$PICTURE" "$PICTURE" > "$dir/README.md"
 run_case "a picture below the first heading is a screenshot, not a logo" 0 "" \
   bash "$CHECK" "$dir"
+
+# A SERVICE needs a Container diagram (macula-sponsors#113): a repository that keeps
+# architecture/README.md is a service with a whole model, and the model a service is
+# planned from is its Context and its Containers.
+new_case; dir="$DIR"; rm "$dir/assets/c4-containers.svg"
+run_case "a service with no container diagram fails" 1 "no assets/*container*.svg" \
+  bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+printf '# architecture\n\n![components](assets/c4-components.svg)\n' > "$dir/architecture/README.md"
+run_case "a service's container diagram no README shows fails" 1 \
+  "c4-containers.svg is not shown" bash "$CHECK" "$dir"
+
+new_case; dir="$DIR"
+rm "$dir/assets/c4-containers.svg"
+printf '# service\n\n![c](assets/c4-context.svg)\n![c](assets/c4-components.svg)\n' \
+  > "$dir/README.md"
+rm -r "$dir/architecture"
+run_case "a repository without an architecture model needs no container diagram" 0 "" \
+  bash "$CHECK" "$dir"
+
+# --design: what gate:design asks of the default branch, before any code. Context
+# and Container, each shown by a README; components come with the code.
+new_case
+run_case "design: the model a service carries passes" 0 "" bash "$CHECK" --design "$DIR"
+
+new_case; dir="$DIR"; rm "$dir/assets/c4-components.svg"
+run_case "design: no component diagram yet passes" 0 "" bash "$CHECK" --design "$dir"
+
+new_case; dir="$DIR"; rm "$dir/assets/c4-containers.svg"
+run_case "design: no container diagram fails" 1 "no assets/*container*.svg" \
+  bash "$CHECK" --design "$dir"
+
+new_case; dir="$DIR"; rm "$dir/assets/c4-context.svg"
+run_case "design: no context diagram fails" 1 "no assets/*context*.svg" \
+  bash "$CHECK" --design "$dir"
+
+new_case; dir="$DIR"; rm -r "$dir/architecture"
+run_case "design: a container diagram nobody shows fails" 1 \
+  "c4-containers.svg is not shown" bash "$CHECK" --design "$dir"
+
+mkdir -p "$WORK/empty-design"
+run_case "design: an empty repository fails" 1 "no assets/*container*.svg" \
+  bash "$CHECK" --design "$WORK/empty-design"
 
 mkdir -p "$WORK/empty"
 run_case "an empty directory is not a model" 1 "no assets/*component*.svg" \

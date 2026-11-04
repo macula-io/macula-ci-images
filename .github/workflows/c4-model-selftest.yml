@@ -1,9 +1,11 @@
-# Prove c4-model.yml before any repository calls it.
+# Prove c4-model.yml and c4-design-gate.yml before any repository calls them.
 #
 # `script` runs scripts/test_c4_model.sh against the check as embedded in the
 # workflow: the model a service carries passes, and every way of not carrying it
 # fails naming the diagram that is missing. `wired` calls the workflow itself on a
-# fixture repository, which proves the call shape and the checkout a caller gets.
+# fixture repository, which proves the call shape and the checkout a caller gets;
+# `wired-design` does the same for the design gate, whose issue comment only runs
+# on an issues event and so stays out of a push.
 
 name: c4 model self-test
 
@@ -12,6 +14,7 @@ on:
     paths:
       - '.github/workflows/c4-model.yml'
       - '.github/workflows/c4-model-selftest.yml'
+      - '.github/workflows/c4-design-gate.yml'
       - 'scripts/c4_model.sh'
       - 'scripts/embed_c4_model.sh'
       - 'scripts/test_c4_model.sh'
@@ -41,6 +44,15 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/c4-model.yml
+    with:
+      runs-on: '["ubuntu-latest"]'
+      working-directory: scripts/fixtures/c4_model/service
+
+  wired-design:
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/c4-design-gate.yml
     with:
       runs-on: '["ubuntu-latest"]'
       working-directory: scripts/fixtures/c4_model/service
