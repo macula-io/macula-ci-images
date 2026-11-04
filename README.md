@@ -114,8 +114,8 @@ anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;
 `--pids-limit` (`GATE_PIDS_LIMIT`, 4096) because an engine's default can be
 pids.max=1 (rootless podman's docker compat API), and removes its workspace on
 exit: `/tmp` on host00 is a shared tmpfs. A workspace or container it cannot
-remove is reported on stderr as `LEFTOVER`, with the command that removes it;
-the job's status stands. `scripts/test_ci_gate.sh` is its test.
+remove is reported on stderr as `LEFTOVER`, with the command that removes it,
+and an engine it cannot ask as `LEFTOVER-UNKNOWN`; the job's status stands. `scripts/test_ci_gate.sh` is its test.
 
 **On a box whose CI runners live under a slice, gate under the same slice.**
 `GATE_CGROUP_PARENT=ci-runners.slice` (msi00, with plain podman as `ENGINE`)

@@ -75,8 +75,9 @@
 # A workspace or container the exit trap cannot remove is reported on stderr
 # as LEFTOVER, with the command that removes it, instead of being left
 # silently: a temporary directory that fills with leaked workspaces runs out of
-# space or inodes for every other user of the machine. The job's exit status
-# is unchanged.
+# space or inodes for every other user of the machine. An engine that cannot
+# be asked whether the container is gone is reported as LEFTOVER-UNKNOWN, not
+# read as nothing left. The job's exit status is unchanged.
 #
 # Uses podman (on host00, `docker' is rootless podman's compat API, which
 # gives containers pids.max=1). Override with ENGINE=docker elsewhere.
@@ -212,8 +213,13 @@ NAME="ci-gate-$(basename "$WORK" | tr -cd 'A-Za-z0-9')"
 # stands.
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
+    local survivor
     "$ENGINE" rm -f "$NAME" >/dev/null 2>&1 || true
-    if [ -n "$("$ENGINE" ps -a -q --filter "name=^$NAME\$" 2>/dev/null)" ]; then
+    # An engine that cannot be asked is not an engine with nothing left: a
+    # failed ps is reported as such, never read as an empty list.
+    if ! survivor="$("$ENGINE" ps -a -q --filter "name=^$NAME\$" 2>/dev/null)"; then
+        echo "LEFTOVER-UNKNOWN: could not check whether container $NAME was removed ($ENGINE ps failed); check with: $ENGINE ps -a --filter name=$NAME" >&2
+    elif [ -n "$survivor" ]; then
         echo "LEFTOVER: container $NAME was not removed; remove it with: $ENGINE rm -f $NAME" >&2
     fi
     rm -rf "$WORK" 2>/dev/null || "$ENGINE" unshare rm -rf "$WORK" 2>/dev/null || true

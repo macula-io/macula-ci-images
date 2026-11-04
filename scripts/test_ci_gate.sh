@@ -639,6 +639,13 @@ case "$1" in
         fi
         exit 0;;
     unshare) exit 1;;   # the subordinate-uid escape hatch fails too
+    ps)                 # FAKE_PS=survivor: the container outlived rm -f;
+                        # FAKE_PS=down: the engine cannot be asked at all
+        case "${FAKE_PS:-}" in
+            survivor) echo 0123456789ab;;
+            down) exit 125;;
+        esac
+        exit 0;;
     *) exit 0;;
 esac
 SH
@@ -681,7 +688,23 @@ LEFT=$(find "$TMPDIR" -mindepth 1 -maxdepth 1)
 grep -qF "LEFTOVER: workspace $LEFT was not removed; remove it with: docker unshare rm -rf $LEFT" <<<"$OUT" \
     || fail "an unremovable workspace was not reported: $OUT"
 chmod -R u+w "$LEFT" && rm -rf "$LEFT"
-unset FAKE_ENGINE_LOG
 [ "$(leftovers)" -eq 0 ] || fail "case 32 could not clean up its own locked workspace"
+grep -q "LEFTOVER.*container" <<<"$OUT" && fail "a removed container was reported as left over: $OUT"
+
+# 33. A container that outlives rm -f is reported as LEFTOVER with the command
+#     that removes it; when the engine cannot even be asked (ps fails), the
+#     trap says LEFTOVER-UNKNOWN rather than reading the failure as "nothing
+#     left". Neither changes the job's status.
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker FAKE_PS=survivor "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "a surviving container turned a passing job into a failure: $OUT"
+grep -qE "^LEFTOVER: container ci-gate-[A-Za-z0-9]+ was not removed; remove it with: docker rm -f ci-gate-[A-Za-z0-9]+$" <<<"$OUT" \
+    || fail "a surviving container was not reported: $OUT"
+OUT=$(PATH="$WORK/fake-docker:$PATH" ENGINE=docker FAKE_PS=down "$GATE" "$WORK/pass" "$(git -C "$WORK/pass" rev-parse HEAD)" 2>&1) \
+    || fail "an unreachable engine at cleanup turned a passing job into a failure: $OUT"
+grep -qE "^LEFTOVER-UNKNOWN: could not check whether container ci-gate-[A-Za-z0-9]+ was removed \(docker ps failed\); check with: docker ps -a --filter name=ci-gate-[A-Za-z0-9]+$" <<<"$OUT" \
+    || fail "a failed ps was read as nothing left: $OUT"
+grep -q "^LEFTOVER: container" <<<"$OUT" && fail "a failed ps was reported as a known survivor: $OUT"
+unset FAKE_ENGINE_LOG
+[ "$(leftovers)" -eq 0 ] || fail "case 33 left a workspace behind"
 
 echo "OK: ci_gate.sh runs the job as CI would and leaves nothing behind"
