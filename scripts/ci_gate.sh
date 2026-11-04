@@ -66,6 +66,18 @@
 # touches only the gate's own run names there, and GATE_LOG_DIR at / or $HOME
 # is refused.
 #
+# Every container gets an explicit --pids-limit (GATE_PIDS_LIMIT, default 4096,
+# a positive whole number). An engine's own default is not trusted: rootless
+# podman's docker compat API gives a container pids.max=1, and a job that
+# forks there dies with `fork: retry: Resource temporarily unavailable', which
+# reads as the build's own fault.
+#
+# A workspace or container the exit trap cannot remove is reported on stderr
+# as LEFTOVER, with the command that removes it, instead of being left
+# silently: a temporary directory that fills with leaked workspaces runs out of
+# space or inodes for every other user of the machine. The job's exit status
+# is unchanged.
+#
 # Uses podman (on host00, `docker' is rootless podman's compat API, which
 # gives containers pids.max=1). Override with ENGINE=docker elsewhere.
 #
@@ -88,7 +100,7 @@
 #
 # Usage: scripts/ci_gate.sh <repo> <sha> [workflow file, default lint.yml] [job, default check]
 #   e.g. scripts/ci_gate.sh ~/work/github.com/macula-services/mcl-om a340c1e lint-and-test.yml
-#   GATE_CPUS=4 GATE_MEMORY=8g ENGINE=podman GATE_TEST_CPUS=runner|0.5
+#   GATE_CPUS=4 GATE_MEMORY=8g GATE_PIDS_LIMIT=4096 ENGINE=podman GATE_TEST_CPUS=runner|0.5
 #   GATE_LOG_DIR=~/.cache/ci-gate GATE_LOG_KEEP=20
 #   GATE_MATRIX=check=eunit GATE_DRY_RUN=1
 #   GATE_REF=refs/heads/main (what github.ref reads in a step's if; a
@@ -113,6 +125,11 @@ JOB="${4:-check}"
 ENGINE="${ENGINE:-podman}"
 CPUS="${GATE_CPUS:-4}"
 MEMORY="${GATE_MEMORY:-8g}"
+PIDS="${GATE_PIDS_LIMIT-4096}"   # set but empty is a mistake, not the default
+if ! [[ "$PIDS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "REFUSED: GATE_PIDS_LIMIT='$PIDS' is not a positive whole number"
+    exit 2
+fi
 LOG_DIR="${GATE_LOG_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ci-gate}"
 LOG_KEEP="${GATE_LOG_KEEP-20}"   # set but empty is a mistake, not the default
 if ! [[ "$LOG_KEEP" =~ ^[1-9][0-9]*$ ]]; then
@@ -191,10 +208,18 @@ NAME="ci-gate-$(basename "$WORK" | tr -cd 'A-Za-z0-9')"
 # rootless podman those files belong to a subordinate uid, which only
 # `podman unshare' may remove. The container is named, so a run cut short by
 # its timeout removes exactly the container it started and no other.
+# What survives both attempts is reported, never swallowed; the job's status
+# stands.
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
     "$ENGINE" rm -f "$NAME" >/dev/null 2>&1 || true
+    if [ -n "$("$ENGINE" ps -a -q --filter "name=^$NAME\$" 2>/dev/null)" ]; then
+        echo "LEFTOVER: container $NAME was not removed; remove it with: $ENGINE rm -f $NAME" >&2
+    fi
     rm -rf "$WORK" 2>/dev/null || "$ENGINE" unshare rm -rf "$WORK" 2>/dev/null || true
+    if [ -e "$WORK" ]; then
+        echo "LEFTOVER: workspace $WORK was not removed; remove it with: $ENGINE unshare rm -rf $WORK" >&2
+    fi
 }
 trap cleanup EXIT
 
@@ -624,7 +649,7 @@ run_pass() {
 
 # --init: the job's bash is not PID 1, so the timeout's SIGTERM reaches it (a
 # PID 1 without handlers ignores it, and the run waits for SIGKILL).
-run_pass "the job" "$ENGINE" run --init --name "$NAME" "${CGROUP_ARGS[@]}" --user 0 --cpus="$CPUS" --memory="$MEMORY" \
+run_pass "the job" "$ENGINE" run --init --name "$NAME" "${CGROUP_ARGS[@]}" --user 0 --cpus="$CPUS" --memory="$MEMORY" --pids-limit="$PIDS" \
     -e MAKEFLAGS=-j"$CPUS" -e CMAKE_BUILD_PARALLEL_LEVEL="$CPUS" -e CARGO_BUILD_JOBS="$CPUS" \
     -v "$WORK/src:/w:Z" -v "$WORK/gate:/gate:ro,Z" -v "$WORK/carry:/carry:Z" \
     "$IMAGE" bash /gate/entry.sh

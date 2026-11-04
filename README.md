@@ -110,8 +110,12 @@ nothing. It refuses what it cannot reproduce (an `if` on a run step reading
 anything else, such as `failure()` or `steps.*`; matrix `include`/`exclude`;
 `shell`, `continue-on-error`, a step's `timeout-minutes`; and any other
 `${{ }}` expression), lists the `uses:` steps it skips, caps the container at
-`GATE_CPUS` (4) and `GATE_MEMORY` (8g), and removes its workspace on exit:
-`/tmp` on host00 is a shared tmpfs. `scripts/test_ci_gate.sh` is its test.
+`GATE_CPUS` (4) and `GATE_MEMORY` (8g), always passes an explicit
+`--pids-limit` (`GATE_PIDS_LIMIT`, 4096) because an engine's default can be
+pids.max=1 (rootless podman's docker compat API), and removes its workspace on
+exit: `/tmp` on host00 is a shared tmpfs. A workspace or container it cannot
+remove is reported on stderr as `LEFTOVER`, with the command that removes it;
+the job's status stands. `scripts/test_ci_gate.sh` is its test.
 
 **On a box whose CI runners live under a slice, gate under the same slice.**
 `GATE_CGROUP_PARENT=ci-runners.slice` (msi00, with plain podman as `ENGINE`)
