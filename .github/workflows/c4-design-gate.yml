@@ -63,9 +63,14 @@ jobs:
       contents: read
       issues: write
     steps:
-      # On an issues event the checkout is the default branch: the model the code will
-      # follow, not a branch someone is drawing it on.
+      # On an issues event, the default branch AT ITS TIP when the job runs: the model
+      # the code will follow. Left to itself, checkout takes the event's GITHUB_SHA,
+      # the tip when the label was applied, and a re-run keeps that sha, so a re-run
+      # after the model lands would stay red for good. A branch name is fetched at
+      # its tip each run. Any other caller (the self-test) checks out its own commit.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'issues' && github.event.repository.default_branch || '' }}
 
       - name: Write the check
         run: |
@@ -203,6 +208,6 @@ jobs:
             printf '```text\n'
             cat "$RUNNER_TEMP/c4_model/design.txt"
             printf '```\n\n'
-            printf 'Draw them as SVGs in `assets/` (a name holding `context`, one holding `container`), shown by `README.md` or `architecture/README.md`, before the first code. The label stays; this check stays red until the model is on the default branch. Re-run: %s\n' "$RUN_URL"
+            printf 'Draw them as SVGs in `assets/` (a name holding `context`, one holding `container`), shown by `README.md` or `architecture/README.md`, before the first code. The label stays; this check stays red until the model is on the default branch; then re-run it, and it reads the branch again: %s\n' "$RUN_URL"
           } > "$body"
           gh issue comment "$ISSUE" -R "$REPO" -F "$body"

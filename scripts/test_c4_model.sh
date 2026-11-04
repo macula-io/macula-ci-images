@@ -87,6 +87,11 @@ check "c4-design-gate.yml is valid YAML" \
 # job, and never takes the label away (macula-sponsors#113, decided 2026-11-04).
 check "the design gate never removes a label" \
   bash -c '! grep -qiE "remove-label|removeLabel|/labels/|--remove|DELETE" "$1"' _ "$DESIGN_WORKFLOW"
+# A re-run must see the model once it lands: on an issues event the checkout is the
+# default branch by name, fetched at its tip, never the event's sha, which a re-run
+# keeps (#20 review).
+check "the design gate checks out the default branch's tip on an issue" \
+  grep -qF "ref: \${{ github.event_name == 'issues' && github.event.repository.default_branch || '' }}" "$DESIGN_WORKFLOW"
 check "the design gate comments only on a gate:design label" \
   grep -qF "github.event.label.name == 'gate:design'" "$DESIGN_WORKFLOW"
 # A parse error after the exit that ends every run is invisible until the day
