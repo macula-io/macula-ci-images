@@ -1,0 +1,57 @@
+# Prove wall-tree.yml before any Division calls it.
+#
+# `script` runs scripts/test_wall_tree.sh against the check as embedded in the
+# workflow — the rule's pin and mutation test in mcl-corpus, and then a passing
+# Division plus every way of not passing, naming the note or the folder.
+# `wired` calls the workflow itself on the fixture, which proves the call shape,
+# the corpus checkout and the `--corpus` wiring a caller gets.
+#
+# Both check out mcl-corpus at the same pinned sha the workflow's corpus-ref
+# defaults to; test_wall_tree.sh fails if the two ever drift apart.
+
+name: wall tree self-test
+
+on:
+  push:
+    paths:
+      - '.github/workflows/wall-tree.yml'
+      - '.github/workflows/wall-tree-selftest.yml'
+      - 'scripts/wall_tree.py'
+      - 'scripts/embed_wall_tree.sh'
+      - 'scripts/test_wall_tree.sh'
+      - 'scripts/fixtures/wall_tree/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wall-tree-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The rule and the schema reader this check imports, at the pinned sha
+        uses: actions/checkout@v4
+        with:
+          repository: macula-services/mcl-corpus
+          ref: ecb1d4e6f220b6f95ca41061e28b5e09bb609cca
+          path: .wall-corpus
+
+      - name: The YAML reader the test uses
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Every pass and every failure, against the check as embedded
+        run: ./scripts/test_wall_tree.sh .wall-corpus
+
+  wired:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/wall-tree.yml
+    with:
+      runs-on: '["ubuntu-latest"]'
+      working-directory: scripts/fixtures/wall_tree/service

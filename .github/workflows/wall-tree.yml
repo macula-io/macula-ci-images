@@ -1,0 +1,173 @@
+# A Division's tree holds exactly the folders its wall asks for (mcl-whiteboard#14).
+#
+# The wall a group agreed on and the code built from it cannot drift apart
+# unnoticed. One JSON file in a Division's repository — wall.json — carries the
+# meaning of its storming wall, names only; this check maps it to the folders
+# the Division's three applications must have, and fails naming every note with
+# no folder and every folder no note asks for. A hot spot never needs a folder.
+#
+# CALL IT
+#
+#   wall-tree:
+#     permissions: { contents: read }
+#     uses: macula-io/macula-ci-images/.github/workflows/wall-tree.yml@<full sha>
+#     # with:                              # optional
+#     #   runs-on: '["self-hosted","msi00","pq"]'
+#     #   corpus-ref: '<mcl-corpus sha>'   # default: the pinned one below
+#
+# Pin it by FULL COMMIT SHA, as every shared call in the fleet is.
+#
+# THE RULE LIVES IN THE CORPUS, NOT HERE. The mapping from a wall file to the
+# folders ("What each note becomes", philosophy/EVENT_STORMING.md) is
+# assets/folders_from_wall.py in macula-services/mcl-corpus, held to that page
+# by a test and a mutation test there. This workflow checks mcl-corpus out at
+# corpus-ref — a pinned sha — and imports the rule, so the check and the rule
+# cannot restate each other and drift apart.
+#
+# THE CHECK LIVES IN THIS FILE, not in the caller's tree, for the reason
+# release-guard.yml gives: a reusable workflow runs in the CALLER's repository.
+# The block below is written from scripts/wall_tree.py by
+# scripts/embed_wall_tree.sh, and scripts/test_wall_tree.sh runs its cases
+# against the block as embedded, so what is tested is what a caller runs.
+
+name: wall tree
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: 'JSON runs-on value; default ["ubuntu-latest"]'
+        required: false
+        type: string
+        default: '["ubuntu-latest"]'
+      working-directory:
+        description: 'The Division repository root holding wall.json; default the root'
+        required: false
+        type: string
+        default: '.'
+      corpus-ref:
+        description: 'The mcl-corpus commit whose assets hold the rule and the schema reader'
+        required: false
+        type: string
+        default: 'ecb1d4e6f220b6f95ca41061e28b5e09bb609cca'
+
+permissions:
+  contents: read
+
+jobs:
+  wall-tree:
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the rule from mcl-corpus
+        uses: actions/checkout@v4
+        with:
+          repository: macula-services/mcl-corpus
+          ref: ${{ inputs.corpus-ref }}
+          path: .wall-corpus
+
+      - name: Write the check
+        run: |
+          mkdir -p "$RUNNER_TEMP/wall_tree"
+          cat > "$RUNNER_TEMP/wall_tree/wall_tree.py" <<'WALL_TREE_SCRIPT'
+          #!/usr/bin/env python3
+          """The wall-to-tree check: a Division's tree holds exactly the folders its wall
+          asks for.
+
+          Usage: wall_tree.py --root ROOT --corpus CORPUS
+
+          ROOT is the Division's repository (the checkout a caller's pipeline runs on);
+          CORPUS is an mcl-corpus checkout at a pinned sha, whose assets/folders_from_wall.py
+          holds the rule and assets/check_wall_schema.py the schema's reader. Neither is
+          restated here: this script imports both.
+
+          First it holds wall.json to wall_schema.json, refusing by JSON path anything
+          that is not a name (a pipeline, a field type, a status flag — Demon 75). Then
+          it maps the wall to the folders its three applications must have, lists the
+          folders they actually have under apps/{host,project,query}_<division>/src/, and
+          fails naming every note whose folder is missing and every folder no note asks
+          for. Hot spots and clock notes never need a folder, because the rule gives them
+          none.
+
+          Exit 0 when the wall and the tree agree, 1 naming what does not.
+          """
+          from __future__ import annotations
+
+          import argparse
+          import json
+          import pathlib
+          import sys
+
+
+          def _app_srcs(root: pathlib.Path, division: str) -> dict[str, pathlib.Path]:
+              return {
+                  "cmd": root / "apps" / f"host_{division}" / "src",
+                  "prj": root / "apps" / f"project_{division}" / "src",
+                  "qry": root / "apps" / f"query_{division}" / "src",
+              }
+
+
+          def main() -> int:
+              parser = argparse.ArgumentParser()
+              parser.add_argument("--root", required=True)
+              parser.add_argument("--corpus", required=True)
+              args = parser.parse_args()
+
+              root = pathlib.Path(args.root)
+              corpus = pathlib.Path(args.corpus)
+              sys.path.insert(0, str(corpus / "assets"))
+
+              from check_wall_schema import check_wall_schema  # noqa: E402
+              from folders_from_wall import folders_from_wall  # noqa: E402
+
+              wall_path = root / "wall.json"
+              if not wall_path.is_file():
+                  print("wall_tree: no wall.json at the repository root", file=sys.stderr)
+                  return 1
+
+              try:
+                  wall = json.loads(wall_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  print(f"wall_tree: wall.json is not valid JSON: {exc}", file=sys.stderr)
+                  return 1
+
+              # The wall holds names only (mcl-whiteboard#14, Demon 75): the schema's
+              # reader refuses anything else, by JSON path, before the rule runs.
+              refusals = check_wall_schema(wall)
+              if refusals:
+                  for refusal in refusals:
+                      print(f"wall_tree: {refusal}", file=sys.stderr)
+                  return 1
+
+              try:
+                  expected = folders_from_wall(wall)
+              except ValueError as exc:
+                  print(f"wall_tree: {exc}", file=sys.stderr)
+                  return 1
+
+              division = wall["division"]
+              failures: list[str] = []
+              for app, src in _app_srcs(root, division).items():
+                  actual = {p.name for p in src.iterdir() if p.is_dir()} if src.is_dir() else set()
+                  want = set(expected[app])
+                  for folder in sorted(want - actual):
+                      failures.append(f"{src.relative_to(root)}/{folder}: a note asks for this folder and it is missing")
+                  for folder in sorted(actual - want):
+                      failures.append(f"{src.relative_to(root)}/{folder}: a folder no note asks for")
+
+              if failures:
+                  for failure in failures:
+                      print(f"wall_tree: {failure}", file=sys.stderr)
+                  return 1
+              print("wall_tree: the wall and the tree agree")
+              return 0
+
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          WALL_TREE_SCRIPT
+
+      - name: The wall and the tree agree
+        working-directory: ${{ inputs.working-directory }}
+        run: python3 "$RUNNER_TEMP/wall_tree/wall_tree.py" --root . --corpus "$GITHUB_WORKSPACE/.wall-corpus"
