@@ -1,0 +1,24 @@
+{
+  "division": "demo",
+  "lanes": ["Staff"],
+  "clock": null,
+  "desks": [
+    { "name": "open_account", "lane": "Staff", "event": "account_opened_v1", "feeds": ["accounts"] },
+    { "name": "close_account", "lane": "Staff", "event": "account_closed_v1", "feeds": [] }
+  ],
+  "policies": [
+    { "on": ["account_opened_v1"], "maybe": "greet_member" }
+  ],
+  "read_models": [
+    { "table": "accounts", "questions": ["get_account_by_id", "get_accounts_by_owner"] }
+  ],
+  "facts_that_leave": ["account_opened_v1"],
+  "facts_that_arrive": [
+    { "fact": "member_joined_v1", "maybe": "open_account" }
+  ],
+  "hot_spots": [],
+  "clock_notes": [],
+  "dossiers": [
+    { "name": "account", "known": [] }
+  ]
+}
