@@ -35,11 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: The rule this check imports, at the pinned sha
+      - name: The rule and the schema reader this check imports, at the pinned sha
         uses: actions/checkout@v4
         with:
           repository: macula-services/mcl-corpus
-          ref: dc7fda5ecc7253b3cbb93889798364b11df606f0
+          ref: c41f90a5e1a97a15e742835d0b1faf83da257d44
           path: .wall-corpus
 
       - name: The YAML reader the test uses

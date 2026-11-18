@@ -46,10 +46,10 @@ on:
         type: string
         default: '.'
       corpus-ref:
-        description: 'The mcl-corpus commit whose assets/folders_from_wall.py holds the rule'
+        description: 'The mcl-corpus commit whose assets hold the rule and the schema reader'
         required: false
         type: string
-        default: 'dc7fda5ecc7253b3cbb93889798364b11df606f0'
+        default: 'c41f90a5e1a97a15e742835d0b1faf83da257d44'
 
 permissions:
   contents: read
@@ -79,13 +79,16 @@ jobs:
 
           ROOT is the Division's repository (the checkout a caller's pipeline runs on);
           CORPUS is an mcl-corpus checkout at a pinned sha, whose assets/folders_from_wall.py
-          holds the rule. The rule is not restated here: this script imports it.
+          holds the rule and assets/check_wall_schema.py the schema's reader. Neither is
+          restated here: this script imports both.
 
-          Reads ROOT/wall.json, maps it to the folders its three applications must have,
-          lists the folders they actually have under apps/{host,project,query}_<division>/src/,
-          and fails naming every note whose folder is missing and every folder no note
-          asks for. Hot spots and clock notes never need a folder, because the rule gives
-          them none.
+          First it holds wall.json to wall_schema.json, refusing by JSON path anything
+          that is not a name (a pipeline, a field type, a status flag — Demon 75). Then
+          it maps the wall to the folders its three applications must have, lists the
+          folders they actually have under apps/{host,project,query}_<division>/src/, and
+          fails naming every note whose folder is missing and every folder no note asks
+          for. Hot spots and clock notes never need a folder, because the rule gives them
+          none.
 
           Exit 0 when the wall and the tree agree, 1 naming what does not.
           """
@@ -115,6 +118,7 @@ jobs:
               corpus = pathlib.Path(args.corpus)
               sys.path.insert(0, str(corpus / "assets"))
 
+              from check_wall_schema import check_wall_schema  # noqa: E402
               from folders_from_wall import folders_from_wall  # noqa: E402
 
               wall_path = root / "wall.json"
@@ -122,7 +126,20 @@ jobs:
                   print("wall_tree: no wall.json at the repository root", file=sys.stderr)
                   return 1
 
-              wall = json.loads(wall_path.read_text(encoding="utf-8"))
+              try:
+                  wall = json.loads(wall_path.read_text(encoding="utf-8"))
+              except json.JSONDecodeError as exc:
+                  print(f"wall_tree: wall.json is not valid JSON: {exc}", file=sys.stderr)
+                  return 1
+
+              # The wall holds names only (mcl-whiteboard#14, Demon 75): the schema's
+              # reader refuses anything else, by JSON path, before the rule runs.
+              refusals = check_wall_schema(wall)
+              if refusals:
+                  for refusal in refusals:
+                      print(f"wall_tree: {refusal}", file=sys.stderr)
+                  return 1
+
               try:
                   expected = folders_from_wall(wall)
               except ValueError as exc:

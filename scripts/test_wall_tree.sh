@@ -100,6 +100,10 @@ check "the rule matches philosophy/EVENT_STORMING.md" \
   python3 "$CORPUS/assets/test_folders_from_wall.py"
 check "every rule mutant is killed" \
   python3 "$CORPUS/assets/mutants_folders_from_wall.py"
+check "the wall's shape is refused by JSON path" \
+  python3 "$CORPUS/assets/test_wall_schema.py"
+check "every schema-reader mutant is killed" \
+  python3 "$CORPUS/assets/mutants_wall_schema.py"
 
 # A FRESH DIVISION PER CASE, from the committed fixture: a wall.json and the
 # tree its three applications must have. `new_case; dir="$DIR"` runs in a
@@ -142,6 +146,35 @@ p.write_text(json.dumps(wall, indent=2))
 PY
 run_case "a wall the rule refuses is refused through the check" 1 \
   "no decided folder name" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
+
+# The wall holds names only (mcl-whiteboard#14, Demon 75): the schema's reader
+# refuses an extra key and a non-name value through the check, by JSON path,
+# before the rule runs.
+new_case; dir="$DIR"
+python3 - "$dir/wall.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+wall = json.loads(p.read_text())
+wall["pipeline"] = ["validate", "persist"]
+p.write_text(json.dumps(wall, indent=2))
+PY
+run_case "an extra key is refused, naming it" 1 \
+  "/pipeline: not a name the schema allows" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
+
+new_case; dir="$DIR"
+python3 - "$dir/wall.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+wall = json.loads(p.read_text())
+wall["desks"][0]["event"] = {"type": "event"}
+p.write_text(json.dumps(wall, indent=2))
+PY
+run_case "a field-typed event is refused, naming it" 1 \
+  "/desks/0/event: expected string, got object" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
+
+new_case; dir="$DIR"; printf 'not json' > "$dir/wall.json"
+run_case "a wall that is not valid JSON is refused" 1 "is not valid JSON" \
+  python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
 
 printf '\n'
 if [ "$failures" -eq 0 ]; then
