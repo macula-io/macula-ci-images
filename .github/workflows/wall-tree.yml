@@ -49,7 +49,7 @@ on:
         description: 'The mcl-corpus commit whose assets hold the rule and the schema reader'
         required: false
         type: string
-        default: 'c41f90a5e1a97a15e742835d0b1faf83da257d44'
+        default: 'ecb1d4e6f220b6f95ca41061e28b5e09bb609cca'
 
 permissions:
   contents: read

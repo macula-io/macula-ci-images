@@ -16,6 +16,9 @@
 # Usage: scripts/test_wall_tree.sh CORPUS [--verbose]
 #   CORPUS is an mcl-corpus checkout at the pinned sha.
 set -uo pipefail
+# No bytecode is cached: the corpus's mutant runs rewrite and restore its rule,
+# and a stale .pyc of a mutant must never be what a later case imports.
+export PYTHONDONTWRITEBYTECODE=1
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -146,6 +149,30 @@ p.write_text(json.dumps(wall, indent=2))
 PY
 run_case "a wall the rule refuses is refused through the check" 1 \
   "no decided folder name" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
+
+# Two desks of one name would collapse into one folder; the rule refuses it, and
+# a repeated lane is refused by the schema's uniqueItems, both through the check.
+new_case; dir="$DIR"
+python3 - "$dir/wall.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+wall = json.loads(p.read_text())
+wall["desks"].append(dict(wall["desks"][0]))
+p.write_text(json.dumps(wall, indent=2))
+PY
+run_case "a desk named twice is refused through the check" 1 \
+  "open_account more than once in cmd" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
+
+new_case; dir="$DIR"
+python3 - "$dir/wall.json" <<'PY'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+wall = json.loads(p.read_text())
+wall["lanes"].append(wall["lanes"][0])
+p.write_text(json.dumps(wall, indent=2))
+PY
+run_case "a repeated lane is refused through the check" 1 \
+  "/lanes/1: repeats /lanes/0" python3 "$CHECK" --root "$dir" --corpus "$CORPUS"
 
 # The wall holds names only (mcl-whiteboard#14, Demon 75): the schema's reader
 # refuses an extra key and a non-name value through the check, by JSON path,

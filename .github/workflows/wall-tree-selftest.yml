@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: macula-services/mcl-corpus
-          ref: c41f90a5e1a97a15e742835d0b1faf83da257d44
+          ref: ecb1d4e6f220b6f95ca41061e28b5e09bb609cca
           path: .wall-corpus
 
       - name: The YAML reader the test uses
